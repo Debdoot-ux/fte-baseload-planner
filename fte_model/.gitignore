@@ -9,4 +9,3 @@ env/
 dist/
 build/
 .streamlit/secrets.toml
-pyrightconfig.json
