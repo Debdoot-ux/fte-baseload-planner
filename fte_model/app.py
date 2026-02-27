@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import Archetype, ModelConfig, StageParams
 from defaults import petronas_baseline
-from model import run_model, _weighted_cost_per_project
+from model import run_model, _weighted_cost_per_project, _projects_for_year
 
 # ---------------------------------------------------------------------------
 # Palette
@@ -448,6 +448,61 @@ def _page_configure():
             else:
                 st.success("Stage percentages add up to 100%")
 
+            # Phase 2 toggle
+            st.divider()
+            p2_on = st.checkbox(
+                "Change TRL allocation in later years",
+                value=cfg.phase2_start_year > 0,
+                key="p2_toggle",
+                help="Enable to use a different \"% start here\" split from a chosen year onward. "
+                     "Conversion rates (% move to next) stay the same across both phases.",
+            )
+            if p2_on:
+                p2_year = int(st.number_input(
+                    "Shift allocation from year",
+                    value=max(cfg.phase2_start_year, cfg.start_year + 1),
+                    min_value=cfg.start_year + 1,
+                    max_value=cfg.end_year,
+                    step=1,
+                    key="p2_year",
+                ))
+                cfg.phase2_start_year = p2_year
+
+                p1c, p2c = st.columns(2)
+                with p1c:
+                    st.caption(f"Phase 1 — {cfg.start_year} to {p2_year - 1}")
+                    for si, sname in enumerate(cfg.pipeline_stages):
+                        st.markdown(f"**{sname}:** {cfg.stage_mix.get(sname, 0)*100:.0f}%")
+                with p2c:
+                    st.caption(f"Phase 2 — {p2_year} onward")
+                    for si, sname in enumerate(cfg.pipeline_stages):
+                        default_p2 = cfg.stage_mix_phase2.get(sname, cfg.stage_mix.get(sname, 0))
+                        p2_alloc = st.number_input(
+                            sname, value=int(default_p2 * 100),
+                            min_value=0, max_value=100, step=5,
+                            key=f"p2a_{si}", label_visibility="visible",
+                        )
+                        cfg.stage_mix_phase2[sname] = p2_alloc / 100.0
+
+                p1_parts = [f"{cfg.stage_mix.get(s,0)*100:.0f}%" for s in cfg.pipeline_stages]
+                p2_parts = [f"{cfg.stage_mix_phase2.get(s,0)*100:.0f}%" for s in cfg.pipeline_stages]
+                stage_labels = " / ".join(cfg.pipeline_stages)
+                st.info(
+                    f"**{cfg.start_year}–{p2_year - 1}:** {' / '.join(p1_parts)} ({stage_labels})  \n"
+                    f"**{p2_year} onward:** {' / '.join(p2_parts)} ({stage_labels})"
+                )
+
+                p2_sum = sum(cfg.stage_mix_phase2.get(s, 0) for s in cfg.pipeline_stages)
+                if abs(p2_sum - 1.0) > 0.01:
+                    st.warning(f"Phase 2 percentages add up to {p2_sum*100:.0f}% — should be 100%")
+                else:
+                    st.success("Phase 2 percentages add up to 100%")
+
+                st.caption("ℹ️ Conversion rates (% move to next) remain the same across both phases.")
+            else:
+                cfg.phase2_start_year = 0
+                cfg.stage_mix_phase2 = {}
+
             st.markdown('</div>', unsafe_allow_html=True)
         else:
             st.markdown('<div class="card"><h5>Project stages — the journey every project takes</h5>', unsafe_allow_html=True)
@@ -464,6 +519,18 @@ def _page_configure():
                 elif si == len(cfg.pipeline_stages) - 1:
                     line += "  \nThis is the final stage — projects end here"
                 st.markdown(line)
+
+            if cfg.phase2_start_year > 0 and cfg.stage_mix_phase2:
+                st.divider()
+                p1_parts = [f"{cfg.stage_mix.get(s,0)*100:.0f}%" for s in cfg.pipeline_stages]
+                p2_parts = [f"{cfg.stage_mix_phase2.get(s,0)*100:.0f}%" for s in cfg.pipeline_stages]
+                stage_labels = " / ".join(cfg.pipeline_stages)
+                st.info(
+                    f"**TRL allocation shifts from {cfg.phase2_start_year}**  \n"
+                    f"**{cfg.start_year}–{cfg.phase2_start_year - 1}:** {' / '.join(p1_parts)} ({stage_labels})  \n"
+                    f"**{cfg.phase2_start_year} onward:** {' / '.join(p2_parts)} ({stage_labels})  \n"
+                    f"_Conversion rates stay the same across both phases._"
+                )
 
             st.divider()
 
@@ -692,33 +759,45 @@ def _page_results():
         _cont_range_sub = f'<div class="kpi-sub"><strong>{adj_min:,.0f} – {adj_max:,.0f}</strong> with contingency</div>'
         _cont_ss_sub = f'<div class="kpi-sub"><strong>{adj_ss_avg:,.0f}</strong> with contingency</div>'
 
+    # Phase 2 project count for KPI
+    has_phase2 = cfg.phase2_start_year > 0 and bool(cfg.stage_mix_phase2)
+    if has_phase2:
+        _proj_p1 = _projects_for_year(cfg, cfg.start_year)
+        _proj_p2 = _projects_for_year(cfg, cfg.phase2_start_year)
+        _proj_kpi_value = f"{_proj_p1:,.0f}"
+        _proj_kpi_sub = (
+            f"{_proj_p1:,.0f}/yr in {cfg.start_year}–{cfg.phase2_start_year - 1} · "
+            f"{_proj_p2:,.0f}/yr from {cfg.phase2_start_year}"
+        )
+    else:
+        _proj_kpi_value = f"{result.projects_per_year:,.0f}"
+        _proj_kpi_sub = "How many the budget can support annually"
+
     # KPI cards
-    st.markdown(f"""
-    <div class="kpi-row">
-        <div class="kpi-card">
-            <div class="kpi-label">Budget available for projects</div>
-            <div class="kpi-value">{cfg.total_budget_m*(1-cfg.overhead_pct):,.0f} M</div>
-            <div class="kpi-sub">{cfg.total_budget_m:,.0f} M total minus {cfg.overhead_pct*100:.0f}% overhead</div>
-        </div>
-        <div class="kpi-card">
-            <div class="kpi-label">New projects funded per year</div>
-            <div class="kpi-value">{result.projects_per_year:,.0f}</div>
-            <div class="kpi-sub">How many the budget can support annually</div>
-        </div>
-        <div class="kpi-card">
-            <div class="kpi-label">Yearly FTE range</div>
-            <div class="kpi-value">{result.steady_state_min_month:,.0f} – {result.steady_state_max_month:,.0f}</div>
-            <div class="kpi-sub">Min to max monthly FTE in {cfg.end_year} — narrows as pipeline stabilizes</div>
-            {_cont_range_sub}
-        </div>
-        <div class="kpi-card">
-            <div class="kpi-label">Steady-state headcount</div>
-            <div class="kpi-value">{result.steady_state_avg:,.0f}</div>
-            <div class="kpi-sub">Avg monthly FTE in {cfg.end_year} — the level the pipeline settles at</div>
-            {_cont_ss_sub}
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(f"""<div class="kpi-row">
+<div class="kpi-card">
+<div class="kpi-label">Budget available for projects</div>
+<div class="kpi-value">{cfg.total_budget_m*(1-cfg.overhead_pct):,.0f} M</div>
+<div class="kpi-sub">{cfg.total_budget_m:,.0f} M total minus {cfg.overhead_pct*100:.0f}% overhead</div>
+</div>
+<div class="kpi-card">
+<div class="kpi-label">New projects funded per year</div>
+<div class="kpi-value">{_proj_kpi_value}</div>
+<div class="kpi-sub">{_proj_kpi_sub}</div>
+</div>
+<div class="kpi-card">
+<div class="kpi-label">Yearly FTE range</div>
+<div class="kpi-value">{result.steady_state_min_month:,.0f} – {result.steady_state_max_month:,.0f}</div>
+<div class="kpi-sub">Min to max monthly FTE in {cfg.end_year} — narrows as pipeline stabilizes</div>
+{_cont_range_sub}
+</div>
+<div class="kpi-card">
+<div class="kpi-label">Steady-state headcount</div>
+<div class="kpi-value">{result.steady_state_avg:,.0f}</div>
+<div class="kpi-sub">Avg monthly FTE in {cfg.end_year} — the level the pipeline settles at</div>
+{_cont_ss_sub}
+</div>
+</div>""", unsafe_allow_html=True)
 
     # Tabs
     tab_dash, tab_how, tab_monthly, tab_annual, tab_assumptions = st.tabs([
@@ -863,6 +942,16 @@ You tell it how much money you have and what types of projects you run. It tells
                 conv = cfg.stage_conversion_rates.get(sn, 0) * 100
                 pipe_text_parts.append(f"  →  *{conv:.0f}% advance*  →  ")
         st.markdown("".join(pipe_text_parts))
+
+        if has_phase2:
+            p1_summary = " / ".join(f"{cfg.stage_mix.get(sn,0)*100:.0f}%" for sn in cfg.pipeline_stages)
+            p2_summary = " / ".join(f"{cfg.stage_mix_phase2.get(sn,0)*100:.0f}%" for sn in cfg.pipeline_stages)
+            stage_labels = " / ".join(cfg.pipeline_stages)
+            st.info(
+                f"**Allocation shifts in {cfg.phase2_start_year}** ({stage_labels})  \n"
+                f"Phase 1: {p1_summary} · Phase 2: {p2_summary}  \n"
+                f"_Conversion rates (% move to next) stay the same._"
+            )
 
         st.markdown("""
 <div class="context-block">
@@ -1046,13 +1135,17 @@ You tell it how much money you have and what types of projects you run. It tells
         st.markdown('<div class="card"><h5>3. Pipeline & funnel</h5>', unsafe_allow_html=True)
         pipe_rows = []
         for si, sn in enumerate(cfg.pipeline_stages):
-            pipe_rows.append({
+            row_data: dict[str, str] = {
                 "Stage": sn,
-                "Direct allocation": f"{cfg.stage_mix.get(sn,0)*100:.0f}%",
-                "Conversion to next": f"{cfg.stage_conversion_rates.get(sn,0)*100:.0f}%" if si < len(cfg.pipeline_stages) - 1 else "Terminal",
-                "Type": "Input",
-            })
+                "Allocation" if not has_phase2 else f"Phase 1 ({cfg.start_year}–{cfg.phase2_start_year - 1})": f"{cfg.stage_mix.get(sn,0)*100:.0f}%",
+                "Conversion to next (all phases)": f"{cfg.stage_conversion_rates.get(sn,0)*100:.0f}%" if si < len(cfg.pipeline_stages) - 1 else "Terminal",
+            }
+            if has_phase2:
+                row_data[f"Phase 2 ({cfg.phase2_start_year}–{cfg.end_year})"] = f"{cfg.stage_mix_phase2.get(sn,0)*100:.0f}%"
+            pipe_rows.append(row_data)
         st.dataframe(pd.DataFrame(pipe_rows), use_container_width=True, hide_index=True)
+        if has_phase2:
+            st.caption("Conversion rates (% move to next) stay the same across both phases — only the allocation (% start here) shifts.")
         st.markdown('</div>', unsafe_allow_html=True)
 
         st.markdown('<div class="card"><h5>4. Advanced</h5>', unsafe_allow_html=True)
@@ -1093,20 +1186,36 @@ You tell it how much money you have and what types of projects you run. It tells
             wc = _weighted_cost_per_project(cfg)
         except Exception:
             wc = 0
-        st.dataframe(pd.DataFrame([
-            {"Metric": "Weighted cost per project",
+        derived_rows = [
+            {"Metric": "Weighted cost per project (Phase 1)" if has_phase2 else "Weighted cost per project",
              "Value": f"{wc:,.1f} M",
              "How": "Portfolio-weighted expected cost across all stages"},
-            {"Metric": "Projects per year",
-             "Value": f"{result.projects_per_year:,.1f}",
+            {"Metric": "Projects per year (Phase 1)" if has_phase2 else "Projects per year",
+             "Value": f"{_projects_for_year(cfg, cfg.start_year):,.1f}" if has_phase2 else f"{result.projects_per_year:,.1f}",
              "How": f"Net budget ({cfg.total_budget_m*(1-cfg.overhead_pct):,.0f} M) ÷ cost per project ({wc:,.1f} M)"},
+        ]
+        if has_phase2:
+            try:
+                wc2 = _weighted_cost_per_project(cfg, cfg.stage_mix_phase2)
+            except Exception:
+                wc2 = 0
+            derived_rows += [
+                {"Metric": "Weighted cost per project (Phase 2)",
+                 "Value": f"{wc2:,.1f} M",
+                 "How": f"With Phase 2 mix from {cfg.phase2_start_year}"},
+                {"Metric": "Projects per year (Phase 2)",
+                 "Value": f"{_projects_for_year(cfg, cfg.phase2_start_year):,.1f}",
+                 "How": f"Net budget ÷ Phase 2 cost per project ({wc2:,.1f} M)"},
+            ]
+        derived_rows += [
             {"Metric": f"Avg FTE in {cfg.end_year}",
              "Value": f"{result.steady_state_avg:,.0f}",
              "How": f"Average monthly total FTE in {cfg.end_year}"},
             {"Metric": f"FTE range in {cfg.end_year}",
              "Value": f"{result.steady_state_min_month:,.0f} – {result.steady_state_max_month:,.0f}",
              "How": f"Min to max monthly FTE in {cfg.end_year}"},
-        ]), use_container_width=True, hide_index=True)
+        ]
+        st.dataframe(pd.DataFrame(derived_rows), use_container_width=True, hide_index=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
         with st.expander("7. Structural assumptions (built into the model)"):
@@ -1141,6 +1250,17 @@ You tell it how much money you have and what types of projects you run. It tells
 # Excel generator
 # ═══════════════════════════════════════════════════════════════════════════
 def _generate_excel(cfg: ModelConfig, result) -> bytes:
+    has_phase2 = cfg.phase2_start_year > 0 and bool(cfg.stage_mix_phase2)
+    if has_phase2:
+        _proj_p1 = _projects_for_year(cfg, cfg.start_year)
+        _proj_p2 = _projects_for_year(cfg, cfg.phase2_start_year)
+        _proj_kpi_value = (
+            f"{_proj_p1:,.0f}/yr ({cfg.start_year}–{cfg.phase2_start_year - 1}), "
+            f"{_proj_p2:,.0f}/yr ({cfg.phase2_start_year}+)"
+        )
+    else:
+        _proj_kpi_value = f"{result.projects_per_year:,.0f}"
+
     wb = Workbook()
 
     navy_fill = PatternFill(start_color="051C2C", end_color="051C2C", fill_type="solid")
@@ -1189,7 +1309,7 @@ def _generate_excel(cfg: ModelConfig, result) -> bytes:
         ("B10", "Archetypes", ", ".join(a.name for a in cfg.archetypes)),
         ("B11", "Avg monthly FTE", f"{result.steady_state_avg:,.0f}"),
         ("B12", "FTE range", f"{result.steady_state_min_month:,.0f} – {result.steady_state_max_month:,.0f}"),
-        ("B13", "Projects/year", f"{result.projects_per_year:,.0f}"),
+        ("B13", "Projects/year", _proj_kpi_value),
     ]
     for ref, lbl, val in info:
         ws[ref] = lbl
@@ -1220,11 +1340,19 @@ def _generate_excel(cfg: ModelConfig, result) -> bytes:
             ("End year", str(cfg.end_year), True),
             ("Intake window", f"{cfg.intake_spread_months} months", True),
         ]),
-        ("PIPELINE", [(sn, f"{cfg.stage_mix.get(sn,0)*100:.0f}% alloc, "
-                           f"{cfg.stage_conversion_rates.get(sn,0)*100:.0f}% conv"
-                           if si < len(cfg.pipeline_stages)-1 else
-                           f"{cfg.stage_mix.get(sn,0)*100:.0f}% alloc (terminal)", True)
-                       for si, sn in enumerate(cfg.pipeline_stages)]),
+        (f"PIPELINE — Phase 1 ({cfg.start_year}–{cfg.phase2_start_year - 1})" if has_phase2 else "PIPELINE",
+         [(sn, f"{cfg.stage_mix.get(sn,0)*100:.0f}% alloc, "
+               f"{cfg.stage_conversion_rates.get(sn,0)*100:.0f}% conv"
+               if si < len(cfg.pipeline_stages)-1 else
+               f"{cfg.stage_mix.get(sn,0)*100:.0f}% alloc (terminal)", True)
+          for si, sn in enumerate(cfg.pipeline_stages)]),
+        *(
+            [(f"PIPELINE — Phase 2 ({cfg.phase2_start_year}–{cfg.end_year})",
+              [(sn, f"{cfg.stage_mix_phase2.get(sn,0)*100:.0f}% alloc", True)
+               for sn in cfg.pipeline_stages]
+              + [("Conversion rates", "Same as Phase 1 — unchanged", False)])]
+            if has_phase2 else []
+        ),
         ("ADVANCED", [
             ("Utilization", f"{cfg.utilization_rate*100:.0f}%", True),
             ("Ramp-up", f"{cfg.ramp_months} months", True),

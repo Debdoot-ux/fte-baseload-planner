@@ -46,6 +46,9 @@ class ModelConfig:
         default_factory=lambda: {"TRL 1-4": 0.50}
     )
 
+    stage_mix_phase2: Dict[str, float] = field(default_factory=dict)
+    phase2_start_year: int = 0
+
     intake_spread_months: int = 6
     utilization_rate: float = 1.0
     ramp_months: int = 0

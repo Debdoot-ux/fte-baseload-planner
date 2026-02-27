@@ -241,6 +241,52 @@ def build_inputs_sheet(wb):
     )
     row += 2
 
+    # ── CHANGE TRL ALLOCATION IN LATER YEARS (optional) ──
+    ws.cell(row=row, column=2, value="CHANGE TRL ALLOCATION IN LATER YEARS (optional)").font = section_font
+    ws.cell(row=row, column=2).comment = _cmt(
+        "PHASE 2 STAGE MIX\n"
+        "If your TRL allocation (% start here) shifts after a certain year, set the Phase 2 values below.\n"
+        "Set start year to 0 to disable (single phase).\n\n"
+        "IMPORTANT: Only the allocation changes — conversion rates (% move to next) stay the same."
+    )
+    row += 1
+    ws.cell(row=row, column=2,
+            value="Only the \"% start here\" allocation changes. Conversion rates stay the same across both phases.").font = note_font
+    row += 1
+
+    p2_items = [
+        ("Shift allocation from year (0 = off)", 2028, "Phase2_Year", "0",
+         "The calendar year from which the new allocation takes effect.\n"
+         "E.g. 2028 → years 2028 onward use Phase 2 allocations.\n"
+         "Set to 0 to disable (single-phase mode)."),
+        ("TRL 1-4 allocation — Phase 2", 0.40, "Alloc_Early_P2", "0%",
+         "Phase 2 version of the TRL 1\u20134 \"% start here\".\n"
+         "Enter as a decimal: 0.40 = 40%.\n"
+         "Phase 1 value is set above (Alloc_Early)."),
+        ("TRL 5-7 allocation — Phase 2", 0.60, "Alloc_Late_P2", "0%",
+         "Phase 2 version of the TRL 5\u20137 \"% start here\".\n"
+         "Enter as a decimal: 0.60 = 60%.\n"
+         "Phase 1 value is set above (Alloc_Late)."),
+    ]
+    for lbl, val, named, fmt, comment in p2_items:
+        ws.cell(row=row, column=2, value=lbl).font = label_font
+        cell = ws.cell(row=row, column=3, value=val)
+        cell.number_format = fmt
+        _style_data_cell(ws, row, 3, is_input=True)
+        wb.defined_names.add(DefinedName(named, attr_text=f"Inputs!$C${row}"))
+        cell.comment = _cmt(comment)
+        row += 1
+
+    ws.cell(row=row, column=2, value="Phase 2 total allocation (should = 100%)").font = label_font
+    ws.cell(row=row, column=3, value="=Alloc_Early_P2+Alloc_Late_P2")
+    ws.cell(row=row, column=3).number_format = "0%"
+    _style_data_cell(ws, row, 3, is_formula=True)
+    ws.cell(row=row, column=3).comment = _cmt(
+        "Sanity check for Phase 2 allocations.\n"
+        "Should equal 100%. Conversion rates remain unchanged."
+    )
+    row += 2
+
     # ── PORTFOLIO MIX ──
     ws.cell(row=row, column=2, value="PORTFOLIO MIX").font = section_font
     ws.cell(row=row, column=2).comment = _cmt(
@@ -403,6 +449,39 @@ def build_inputs_sheet(wb):
     ws.cell(row=row, column=4, value="Net budget \u00f7 weighted cost per project").font = note_font
     row += 1
 
+    # Phase 2 weighted cost
+    wc_p2_formula = (
+        "=Share_Chem*(Alloc_Early_P2*(Chem_E_Cost + Conv_Early*Chem_L_Cost) + Alloc_Late_P2*Chem_L_Cost)"
+        "+Share_HW*(Alloc_Early_P2*(HW_E_Cost + Conv_Early*HW_L_Cost) + Alloc_Late_P2*HW_L_Cost)"
+        "+Share_SW*(Alloc_Early_P2*(SW_E_Cost + Conv_Early*SW_L_Cost) + Alloc_Late_P2*SW_L_Cost)"
+    )
+    ws.cell(row=row, column=2, value="Weighted cost per project — after allocation shift (M)").font = label_font
+    ws.cell(row=row, column=2).border = thin_border
+    c_wc2 = ws.cell(row=row, column=3, value=wc_p2_formula)
+    c_wc2.number_format = "#,##0.0"
+    _style_data_cell(ws, row, 3, is_formula=True)
+    wb.defined_names.add(DefinedName("WtdCost_P2", attr_text=f"Inputs!$C${row}"))
+    c_wc2.comment = _cmt(
+        "Same formula as the Phase 1 weighted cost, but uses Phase 2 allocations.\n"
+        "Only applies from the shift year onward (if enabled).\n"
+        "Conversion rates are the same — only allocation changes."
+    )
+    ws.cell(row=row, column=4, value="Same formula, but with Phase 2 allocations").font = note_font
+    row += 1
+
+    ws.cell(row=row, column=2, value="Projects per year — after allocation shift").font = label_font
+    ws.cell(row=row, column=2).border = thin_border
+    c_pp2 = ws.cell(row=row, column=3, value="=IF(WtdCost_P2>0, NetBudget/WtdCost_P2, 0)")
+    c_pp2.number_format = "#,##0.0"
+    _style_data_cell(ws, row, 3, is_formula=True)
+    wb.defined_names.add(DefinedName("ProjPerYr_P2", attr_text=f"Inputs!$C${row}"))
+    c_pp2.comment = _cmt(
+        "Projects per year after the allocation shift.\n"
+        "= Net project budget \u00f7 Phase 2 weighted cost per project."
+    )
+    ws.cell(row=row, column=4, value="Net budget \u00f7 post-shift weighted cost").font = note_font
+    row += 1
+
     # ── CONTINGENCY ──
     row += 1
     ws.cell(row=row, column=2, value="CONTINGENCY").font = section_font
@@ -540,6 +619,12 @@ def build_glossary_sheet(wb):
         ("Contingency % is a buffer added on top of calculated FTE to account for uncertainty,", label_font),
         ("attrition, leave, or estimation error. It is set separately for Research and Developer roles.", label_font),
         ("Adjusted FTE = Base FTE \u00d7 (1 + Contingency %). Set on the Inputs sheet; defaults to 0%.", label_font),
+        ("", None),
+        ("CHANGING TRL ALLOCATION OVER TIME", section_font),
+        ("You can shift the TRL allocation (% start here) from a chosen year onward.", label_font),
+        ("Only the allocation changes — conversion rates (% move to next) stay the same across both phases.", label_font),
+        ("E.g. 2026–2027: 20% TRL 1-4 / 80% TRL 5-7 → 2028 onward: 40% TRL 1-4 / 60% TRL 5-7.", label_font),
+        ("Set the shift year to 0 on the Inputs sheet to disable (single phase).", label_font),
     ]
 
     ws.cell(row=70, column=2).comment = _cmt(
@@ -667,7 +752,19 @@ def build_engine_sheet(wb):
     ws.cell(row=3, column=3).comment = _cmt("Calendar year extracted from the date.")
     ws.cell(row=3, column=4).comment = _cmt("Calendar month (1\u201312) extracted from the date.")
 
-    # Comments on first archetype FTE headers
+    first_starts_col = arch_start_col
+    ws.cell(row=3, column=first_starts_col).comment = _cmt(
+        "Early Direct Starts per month.\n"
+        "Phase-aware: uses Phase 1 allocation before the shift year, Phase 2 after.\n"
+        "If Phase 2 is disabled (shift year = 0), always uses Phase 1."
+    )
+    first_late_direct_col = arch_start_col + 3
+    ws.cell(row=3, column=first_late_direct_col).comment = _cmt(
+        "Late Direct Starts per month.\n"
+        "Phase-aware: uses Phase 1 allocation before the shift year, Phase 2 after.\n"
+        "Conversion starts (from early stage) are NOT phase-dependent — only direct starts shift."
+    )
+
     first_res_col = arch_start_col + 6
     first_dev_col = arch_start_col + 7
     first_tot_col = arch_start_col + 8
@@ -723,10 +820,12 @@ def build_engine_sheet(wb):
             res_late = f"{ashort}_L_Res"
             dev_late = f"{ashort}_L_Dev"
 
-            # Early Direct Starts per month
+            # Early Direct Starts per month (phase-aware)
             ws.cell(row=r, column=sc).value = (
                 f"=IF(AND(C{r}>=StartYear, C{r}<=EndYear, D{r}<=IntakeMonths),"
-                f" ProjPerYr*{share}*Alloc_Early/IntakeMonths, 0)"
+                f" IF(AND(Phase2_Year>0, C{r}>=Phase2_Year),"
+                f" ProjPerYr_P2*{share}*Alloc_Early_P2/IntakeMonths,"
+                f" ProjPerYr*{share}*Alloc_Early/IntakeMonths), 0)"
             )
             ws.cell(row=r, column=sc).number_format = "0.00"
 
@@ -748,10 +847,12 @@ def build_engine_sheet(wb):
             )
             ws.cell(row=r, column=sc + 2).number_format = "0.00"
 
-            # Late Direct Starts
+            # Late Direct Starts (phase-aware)
             ws.cell(row=r, column=sc + 3).value = (
                 f"=IF(AND(C{r}>=StartYear, C{r}<=EndYear, D{r}<=IntakeMonths),"
-                f" ProjPerYr*{share}*Alloc_Late/IntakeMonths, 0)"
+                f" IF(AND(Phase2_Year>0, C{r}>=Phase2_Year),"
+                f" ProjPerYr_P2*{share}*Alloc_Late_P2/IntakeMonths,"
+                f" ProjPerYr*{share}*Alloc_Late/IntakeMonths), 0)"
             )
             ws.cell(row=r, column=sc + 3).number_format = "0.00"
 

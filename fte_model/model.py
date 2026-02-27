@@ -17,6 +17,13 @@ def _available_budget(cfg: ModelConfig) -> float:
     return cfg.total_budget_m * (1 - cfg.overhead_pct)
 
 
+def _get_stage_mix(cfg: ModelConfig, year: int) -> Dict[str, float]:
+    """Return the stage mix applicable for *year*, respecting Phase 2 override."""
+    if cfg.phase2_start_year > 0 and cfg.stage_mix_phase2 and year >= cfg.phase2_start_year:
+        return cfg.stage_mix_phase2
+    return cfg.stage_mix
+
+
 # ---------------------------------------------------------------------------
 # Cost calculation (generalized for N stages)
 # ---------------------------------------------------------------------------
@@ -44,16 +51,18 @@ def _expected_cost_from_stage(
     return cost
 
 
-def _weighted_cost_per_project(cfg: ModelConfig) -> float:
+def _weighted_cost_per_project(cfg: ModelConfig, mix: Dict[str, float] | None = None) -> float:
     """Portfolio-weighted average cost per project across all entry points."""
+    if mix is None:
+        mix = cfg.stage_mix
     stages = cfg.pipeline_stages
     total = 0.0
     for arch in cfg.archetypes:
         arch_cost = 0.0
         for i, sname in enumerate(stages):
-            mix = cfg.stage_mix.get(sname, 0.0)
-            if mix > 0 and sname in arch.stages:
-                arch_cost += mix * _expected_cost_from_stage(
+            mix_val = mix.get(sname, 0.0)
+            if mix_val > 0 and sname in arch.stages:
+                arch_cost += mix_val * _expected_cost_from_stage(
                     arch, stages, cfg.stage_conversion_rates, i
                 )
         total += arch.portfolio_share * arch_cost
@@ -63,6 +72,16 @@ def _weighted_cost_per_project(cfg: ModelConfig) -> float:
 def _projects_per_year(cfg: ModelConfig) -> float:
     budget = _available_budget(cfg)
     wc = _weighted_cost_per_project(cfg)
+    if wc <= 0:
+        return 0.0
+    return budget / wc
+
+
+def _projects_for_year(cfg: ModelConfig, year: int) -> float:
+    """Projects per year using the stage mix applicable to *year*."""
+    mix = _get_stage_mix(cfg, year)
+    budget = _available_budget(cfg)
+    wc = _weighted_cost_per_project(cfg, mix)
     if wc <= 0:
         return 0.0
     return budget / wc
@@ -107,7 +126,6 @@ def _active_stock(
 def _run_archetype(
     cfg: ModelConfig,
     arch: Archetype,
-    arch_projects: float,
     idx: pd.DatetimeIndex,
     utilization: float,
     records: List[dict],
@@ -127,10 +145,12 @@ def _run_archetype(
 
         starts = pd.Series(0.0, index=idx)
 
-        direct_n = arch_projects * cfg.stage_mix.get(sname, 0.0)
-        if direct_n > 0:
-            monthly_n = direct_n / max(cfg.intake_spread_months, 1)
-            for y in range(cfg.start_year, cfg.end_year + 1):
+        for y in range(cfg.start_year, cfg.end_year + 1):
+            mix_y = _get_stage_mix(cfg, y)
+            proj_y = _projects_for_year(cfg, y) * arch.portfolio_share
+            direct_n = proj_y * mix_y.get(sname, 0.0)
+            if direct_n > 0:
+                monthly_n = direct_n / max(cfg.intake_spread_months, 1)
                 for m in range(1, cfg.intake_spread_months + 1):
                     ts = pd.Timestamp(f"{y}-{m:02d}-01")
                     if ts in starts.index:
@@ -174,8 +194,6 @@ def _run_archetype(
 # ---------------------------------------------------------------------------
 
 def run(cfg: ModelConfig) -> Dict:
-    total_proj = _projects_per_year(cfg)
-
     tail_months = 0
     for a in cfg.archetypes:
         arch_dur = sum(
@@ -193,8 +211,7 @@ def run(cfg: ModelConfig) -> Dict:
     records: List[dict] = []
 
     for arch in cfg.archetypes:
-        arch_projects = total_proj * arch.portfolio_share
-        _run_archetype(cfg, arch, arch_projects, idx, utilization, records)
+        _run_archetype(cfg, arch, idx, utilization, records)
 
     monthly = pd.DataFrame(records)
     if monthly.empty:
@@ -203,7 +220,8 @@ def run(cfg: ModelConfig) -> Dict:
                       "effective_projects", "fte_research", "fte_developer", "fte_total"]
         )
 
-    return {"monthly": monthly, "projects_per_year": total_proj}
+    proj_last_year = _projects_for_year(cfg, cfg.end_year)
+    return {"monthly": monthly, "projects_per_year": proj_last_year}
 
 
 def run_model(cfg: ModelConfig) -> ModelResult:
