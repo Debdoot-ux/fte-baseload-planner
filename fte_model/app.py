@@ -19,8 +19,8 @@ from openpyxl.utils import get_column_letter
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import Archetype, ModelConfig, StageParams
-from defaults import petronas_baseline
-from model import run_model, _weighted_cost_per_project, _projects_for_year
+from defaults import default_baseline
+from model import run_model, _weighted_cost_per_project
 
 # ---------------------------------------------------------------------------
 # Palette
@@ -242,7 +242,7 @@ st.markdown(f"""
 # Session state
 # ---------------------------------------------------------------------------
 if "cfg" not in st.session_state or not hasattr(st.session_state.cfg, "pipeline_stages"):
-    st.session_state.cfg = petronas_baseline()
+    st.session_state.cfg = default_baseline()
 if "page" not in st.session_state:
     st.session_state.page = "configure"
 
@@ -333,7 +333,7 @@ def _page_configure():
         st.markdown('<div class="card"><h5>Budget & timeline</h5>', unsafe_allow_html=True)
 
         cfg.total_budget_m = st.number_input(
-            "Annual R&D budget (USD millions)", value=cfg.total_budget_m, min_value=1.0,
+            "Annual R&D budget (MYR millions)", value=cfg.total_budget_m, min_value=1.0,
             step=10.0, format="%.0f",
             help="Total yearly R&D spend, before any deductions",
         )
@@ -357,6 +357,23 @@ def _page_configure():
                                                 help="Last year new projects are started — projects already in progress continue beyond this"))
             if cfg.end_year <= cfg.start_year:
                 cfg.end_year = cfg.start_year + 1
+
+        _mode_options = ["Cash-flow", "Commitment"]
+        _mode_map = {"Cash-flow": "cashflow", "Commitment": "commitment"}
+        _mode_map_inv = {v: k for k, v in _mode_map.items()}
+        _mode_sel = st.radio(
+            "Budget model",
+            _mode_options,
+            index=_mode_options.index(_mode_map_inv.get(cfg.budget_mode, "Cash-flow")),
+            horizontal=True,
+            help=(
+                "**Cash-flow**: annual budget covers ongoing project costs first; "
+                "only the remainder funds new starts (project counts vary year to year). "
+                "**Commitment**: each year's budget funds the full lifecycle cost of new "
+                "projects upfront (same count every year within a phase)."
+            ),
+        )
+        cfg.budget_mode = _mode_map[_mode_sel]
 
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -688,16 +705,23 @@ def _page_configure():
     st.markdown('</div>', unsafe_allow_html=True)
 
     with st.expander("Things the model assumes that cannot be changed"):
-        st.markdown("""
+        if cfg.budget_mode == "cashflow":
+            _budget_row = "| Cash-flow budgeting | The annual budget covers ongoing project costs first; only the remainder funds new starts |"
+            _budget_extra = "| Linear cost burn | Project cost is spread evenly across its duration (cost ÷ months) |"
+        else:
+            _budget_row = "| Commitment budgeting | Each year's budget funds the full lifecycle cost of new projects upfront |"
+            _budget_extra = "| Each year stands alone | Budget for year N is independent of ongoing costs from prior years |"
+        st.markdown(f"""
 | What the model assumes | In plain language |
 |------------------------|-------------------|
 | Monthly tracking | The model tracks projects and headcount month by month |
+{_budget_row}
 | Same team size throughout a project | Once a project starts, its team stays the same size (unless ramp-up is on) |
 | Graduates add to the next stage | Projects that finish an early stage and move on are *added* to whatever's already in the next stage |
-| Each year stands alone | This year's new projects don't depend on last year's results |
 | No projects get cancelled midway | Once started, every project runs to the end of its stage |
 | No bulk discounts | Running 50 projects doesn't make each one cheaper than running 5 |
-| Same budget every year | The model uses the same annual budget for every year in the range |
+| Same gross budget every year | The same annual budget envelope applies every year |
+{_budget_extra}
 | Two roles only | Researchers and Developers — no other role types |
 | Projects start evenly | New projects are spread evenly across the intake months (not all at once) |
 | One path through the pipeline | Projects go forward through stages in order — no skipping ahead or looping back |
@@ -712,7 +736,7 @@ def _page_configure():
     _, rc, _ = st.columns([1, 2, 1])
     with rc:
         if st.button("⟳  Reset to baseline defaults", use_container_width=True):
-            st.session_state.cfg = petronas_baseline()
+            st.session_state.cfg = default_baseline()
             st.rerun()
 
 
@@ -759,19 +783,51 @@ def _page_results():
         _cont_range_sub = f'<div class="kpi-sub"><strong>{adj_min:,.0f} – {adj_max:,.0f}</strong> with contingency</div>'
         _cont_ss_sub = f'<div class="kpi-sub"><strong>{adj_ss_avg:,.0f}</strong> with contingency</div>'
 
-    # Phase 2 project count for KPI
+    # Per-year project counts
     has_phase2 = cfg.phase2_start_year > 0 and bool(cfg.stage_mix_phase2)
-    if has_phase2:
-        _proj_p1 = _projects_for_year(cfg, cfg.start_year)
-        _proj_p2 = _projects_for_year(cfg, cfg.phase2_start_year)
-        _proj_kpi_value = f"{_proj_p1:,.0f}"
-        _proj_kpi_sub = (
-            f"{_proj_p1:,.0f}/yr in {cfg.start_year}–{cfg.phase2_start_year - 1} · "
-            f"{_proj_p2:,.0f}/yr from {cfg.phase2_start_year}"
-        )
+    yp = result.yearly_projects
+    is_cashflow = cfg.budget_mode == "cashflow"
+
+    if is_cashflow and yp:
+        total_proj = sum(yp.values())
+        avg_proj = total_proj / max(len(yp), 1)
+        yr_parts = [f"{yp.get(y, 0):,.0f}" for y in range(cfg.start_year, cfg.end_year + 1)]
+        _proj_kpi_value = f"{total_proj:,.0f}"
+        _proj_kpi_label = "Total new projects"
+        _proj_kpi_sub = "Per year: " + " → ".join(yr_parts)
+
+        _ann = result.annual_summary
+        if not _ann.empty:
+            _peak_row = _ann.loc[_ann["Max monthly FTE"].idxmax()]
+            _peak_fte = _peak_row["Max monthly FTE"]
+            _peak_yr = int(_peak_row["Year"])
+        else:
+            _peak_fte = result.steady_state_max_month
+            _peak_yr = cfg.end_year
+
+        _kpi3_label = "Peak monthly FTE"
+        _kpi3_value = f"{_peak_fte:,.0f}"
+        _kpi3_sub = f"Highest single-month FTE across all years (in {_peak_yr})"
+
+        _kpi4_label = f"Avg FTE in {cfg.end_year}"
+        _kpi4_value = f"{result.steady_state_avg:,.0f}"
+        _kpi4_sub = f"Average monthly headcount in the final year"
     else:
-        _proj_kpi_value = f"{result.projects_per_year:,.0f}"
-        _proj_kpi_sub = "How many the budget can support annually"
+        yr_parts = [f"{yp.get(y, 0):,.0f}" for y in range(cfg.start_year, cfg.end_year + 1)] if yp else []
+        _proj_kpi_value = f"{yp.get(cfg.start_year, result.projects_per_year):,.0f}" if yp else f"{result.projects_per_year:,.0f}"
+        _proj_kpi_label = "New projects per year"
+        if yr_parts:
+            _proj_kpi_sub = " → ".join(yr_parts) + " (shifts at Phase 2)" if has_phase2 else "Same count every year"
+        else:
+            _proj_kpi_sub = "How many the budget can support annually"
+
+        _kpi3_label = f"FTE range in {cfg.end_year}"
+        _kpi3_value = f"{result.steady_state_min_month:,.0f} \u2013 {result.steady_state_max_month:,.0f}"
+        _kpi3_sub = f"Min to max monthly FTE \u2014 narrows as pipeline stabilizes"
+
+        _kpi4_label = "Steady-state headcount"
+        _kpi4_value = f"{result.steady_state_avg:,.0f}"
+        _kpi4_sub = f"Avg monthly FTE in {cfg.end_year} \u2014 the level the pipeline settles at"
 
     # KPI cards
     st.markdown(f"""<div class="kpi-row">
@@ -781,20 +837,20 @@ def _page_results():
 <div class="kpi-sub">{cfg.total_budget_m:,.0f} M total minus {cfg.overhead_pct*100:.0f}% overhead</div>
 </div>
 <div class="kpi-card">
-<div class="kpi-label">New projects funded per year</div>
+<div class="kpi-label">{_proj_kpi_label}</div>
 <div class="kpi-value">{_proj_kpi_value}</div>
 <div class="kpi-sub">{_proj_kpi_sub}</div>
 </div>
 <div class="kpi-card">
-<div class="kpi-label">Yearly FTE range</div>
-<div class="kpi-value">{result.steady_state_min_month:,.0f} – {result.steady_state_max_month:,.0f}</div>
-<div class="kpi-sub">Min to max monthly FTE in {cfg.end_year} — narrows as pipeline stabilizes</div>
+<div class="kpi-label">{_kpi3_label}</div>
+<div class="kpi-value">{_kpi3_value}</div>
+<div class="kpi-sub">{_kpi3_sub}</div>
 {_cont_range_sub}
 </div>
 <div class="kpi-card">
-<div class="kpi-label">Steady-state headcount</div>
-<div class="kpi-value">{result.steady_state_avg:,.0f}</div>
-<div class="kpi-sub">Avg monthly FTE in {cfg.end_year} — the level the pipeline settles at</div>
+<div class="kpi-label">{_kpi4_label}</div>
+<div class="kpi-value">{_kpi4_value}</div>
+<div class="kpi-sub">{_kpi4_sub}</div>
 {_cont_ss_sub}
 </div>
 </div>""", unsafe_allow_html=True)
@@ -961,34 +1017,59 @@ You tell it how much money you have and what types of projects you run. It tells
 
         st.markdown("#### How the model calculates headcount — step by step")
 
+        _net = cfg.total_budget_m * (1 - cfg.overhead_pct)
         st.markdown(f"""
 <div class="hiw-step">
     <div class="hiw-step-num">1</div>
     <div class="hiw-step-body">
         <h5>Start with the money</h5>
         <p>You have a total R&D budget. First, subtract overhead (admin, facilities, management). What's left is the money available to actually fund projects.</p>
-        <div class="hiw-formula">Net project budget = Total budget × (1 − Overhead %)</div>
-        <p>Example: {cfg.total_budget_m:,.0f}M total × (1 − {cfg.overhead_pct*100:.0f}%) = <strong>{cfg.total_budget_m*(1-cfg.overhead_pct):,.0f}M</strong> available for projects.</p>
+        <div class="hiw-formula">Net project budget = Total budget &times; (1 &minus; Overhead %)</div>
+        <p>Example: {cfg.total_budget_m:,.0f}M total &times; (1 &minus; {cfg.overhead_pct*100:.0f}%) = <strong>{_net:,.0f}M</strong> available for projects.</p>
     </div>
 </div>
+""", unsafe_allow_html=True)
 
+        if is_cashflow:
+            st.markdown(f"""
 <div class="hiw-step">
     <div class="hiw-step-num">2</div>
     <div class="hiw-step-body">
-        <h5>Figure out how many projects you can afford</h5>
-        <p>Each project type has a cost. The model computes a <em>weighted average cost per project</em> based on your portfolio mix (how much of each type you run) and which pipeline stages they go through.</p>
-        <div class="hiw-formula">Projects per year = Net budget ÷ Weighted avg cost per project</div>
+        <h5>Figure out how many projects you can afford (cash-flow budgeting)</h5>
+        <p>Under <strong>cash-flow budgeting</strong>, the {_net:,.0f}M annual budget must cover <em>everything running that year</em> &mdash; ongoing projects from prior years <strong>and</strong> new projects started this year.</p>
+        <p>The model works year by year:</p>
+        <ol>
+            <li><strong>Ongoing cost</strong> &mdash; for each project cohort still running from prior years, compute: <code>count &times; (cost &divide; duration) &times; months active this year</code>. Sum across all cohorts.</li>
+            <li><strong>Available budget</strong> = {_net:,.0f}M &minus; ongoing cost. If ongoing costs exceed the budget, no new projects can start that year.</li>
+            <li><strong>Partial-year cost per new project</strong> &mdash; a project started mid-year only consumes part of its lifetime cost this year. The model computes the average cost burned between the start month and December, weighted across all archetypes and stages.</li>
+            <li><strong>New projects</strong> = available budget &divide; partial-year cost.</li>
+        </ol>
+        <p>This means project counts <strong>vary year to year</strong>. A big intake year creates a cost wave that squeezes subsequent years. Once those projects complete, budget frees up for another wave.</p>
     </div>
 </div>
+""", unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+<div class="hiw-step">
+    <div class="hiw-step-num">2</div>
+    <div class="hiw-step-body">
+        <h5>Figure out how many projects you can afford (commitment budgeting)</h5>
+        <p>Under <strong>commitment budgeting</strong>, each year's {_net:,.0f}M budget funds the <em>full lifecycle cost</em> of new projects upfront. Ongoing costs from prior years are not counted &mdash; each year stands alone.</p>
+        <div class="hiw-formula">Projects per year = Net budget &divide; Weighted avg lifecycle cost per project</div>
+        <p>The project count is the <strong>same every year</strong> within a phase (it only changes if the stage allocation shifts at Phase 2).</p>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
+        st.markdown(f"""
 <div class="hiw-step">
     <div class="hiw-step-num">3</div>
     <div class="hiw-step-body">
         <h5>Distribute projects across types and stages</h5>
         <p>The total project count is split across your project types (archetypes) based on portfolio shares. Within each type, projects are assigned to pipeline stages:</p>
         <ul>
-            <li><strong>Direct allocation</strong> — a fixed percentage of new projects start directly at each stage</li>
-            <li><strong>Conversion</strong> — when early-stage projects finish, a percentage of them "graduate" to the next stage, creating additional projects there</li>
+            <li><strong>Direct allocation</strong> &mdash; a fixed percentage of new projects start directly at each stage</li>
+            <li><strong>Conversion</strong> &mdash; when early-stage projects finish, a percentage of them "graduate" to the next stage, creating additional projects there</li>
         </ul>
         <p>This means later stages get projects from two sources: direct allocation + graduates from the previous stage.</p>
     </div>
@@ -998,8 +1079,8 @@ You tell it how much money you have and what types of projects you run. It tells
     <div class="hiw-step-num">4</div>
     <div class="hiw-step-body">
         <h5>Simulate the pipeline month by month</h5>
-        <p>Each year's new projects are spread across the first few months (the "intake window"). Once a project starts, it stays active for its full duration — say 12 months. The model tracks how many projects are running in each stage, every single month.</p>
-        <p>Because projects from different years overlap (Year 1 projects may still be running when Year 2 projects start), headcount <strong>builds up</strong> over the first 2–3 years before levelling off.</p>
+        <p>Each year's new projects are spread across the first few months (the "intake window"). Once a project starts, it stays active for its full duration. The model tracks how many projects are running in each stage, every single month.</p>
+        <p>Because projects from different years overlap (Year 1 projects may still be running when Year 2 projects start), headcount <strong>builds up</strong> over the first 2&ndash;3 years.</p>
     </div>
 </div>
 
@@ -1007,30 +1088,62 @@ You tell it how much money you have and what types of projects you run. It tells
     <div class="hiw-step-num">5</div>
     <div class="hiw-step-body">
         <h5>Convert active projects into people needed</h5>
-        <p>Every active project needs a team — some researchers and some developers. Multiply the number of active projects by the staff each project requires.</p>
-        <div class="hiw-formula">FTE in a month = Active projects × Staff per project</div>
+        <p>Every active project needs a team &mdash; some researchers and some developers. Multiply the number of active projects by the staff each project requires.</p>
+        <div class="hiw-formula">FTE in a month = Active projects &times; Staff per project</div>
         <p>If utilization is less than 100% (people spend time on admin, training, leave), the model inflates the number to account for that. If ramp-up is set, new projects start with a partial team that grows to full strength over a few months.</p>
     </div>
 </div>
 """, unsafe_allow_html=True)
 
-        st.markdown("#### Understanding steady state and the yearly range")
-        st.markdown(f"""
+        if is_cashflow:
+            st.markdown(f"""
+#### Understanding the cash-flow FTE profile
 <div class="context-block">
-<p><strong>Why does headcount grow at first?</strong> In Year 1, projects start but none have finished yet — so the pipeline only fills up. In Year 2, new projects start while Year 1 projects are still running. Headcount keeps climbing until the rate of new starts roughly equals the rate of completions. Once that happens, headcount stabilizes — this is the <strong>steady state</strong>.</p>
+<p><strong>Why do project counts oscillate?</strong> In Year 1 the pipeline is empty, so the full {_net:,.0f}M goes to new projects &mdash; a large intake. In Year 2, those projects are still running and consuming budget, leaving little or no room for new starts. As older projects complete in Year 3, budget frees up again. This creates a "feast and famine" cycle.</p>
+
+<p><strong>What does that mean for headcount?</strong> FTE demand is driven by active projects, not new starts alone. Even when new starts drop to zero, ongoing projects still need staff. So headcount doesn't crash &mdash; it fluctuates within a range as waves of projects overlap.</p>
 
 <p><strong>Why is there a range within each year?</strong> Because new projects start during an intake window (not all at once), FTE demand varies month to month:</p>
 <ul>
-<li><strong>Steady-state headcount</strong> — the average monthly FTE in the last intake year ({cfg.end_year}). This is the long-run staffing level your hiring plan should target.</li>
-<li><strong>Min monthly FTE</strong> — the quietest month (e.g. just before a new annual cohort starts)</li>
-<li><strong>Max monthly FTE</strong> — the busiest month (e.g. when old and new cohorts overlap most)</li>
+<li><strong>Peak monthly FTE</strong> &mdash; the busiest month across all years, when the most cohorts overlap</li>
+<li><strong>Avg FTE in {cfg.end_year}</strong> &mdash; the average headcount in the final year; use as a planning baseline</li>
+<li><strong>Min monthly FTE</strong> &mdash; the quietest month (e.g. just before a new cohort starts)</li>
+</ul>
+<p>Under cash-flow budgeting there is no true steady state within a 5-year window &mdash; use the final-year average as your planning target.</p>
+</div>
+""", unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+#### Understanding steady state and the yearly range
+<div class="context-block">
+<p><strong>Why does headcount grow at first?</strong> In Year 1, projects start but none have finished yet &mdash; the pipeline only fills up. In Year 2, new projects start while Year 1 projects are still running. Headcount keeps climbing until the rate of new starts roughly equals the rate of completions. Once that happens, headcount stabilizes &mdash; this is the <strong>steady state</strong>.</p>
+
+<p><strong>Why is there a range within each year?</strong> Because new projects start during an intake window (not all at once), FTE demand varies month to month:</p>
+<ul>
+<li><strong>Steady-state headcount</strong> &mdash; the average monthly FTE in the last intake year ({cfg.end_year}). This is the long-run staffing level your hiring plan should target.</li>
+<li><strong>Min monthly FTE</strong> &mdash; the quietest month (e.g. just before a new annual cohort starts)</li>
+<li><strong>Max monthly FTE</strong> &mdash; the busiest month (e.g. when old and new cohorts overlap most)</li>
 </ul>
 <p>Early years have a wide range (pipeline is still filling). Later years have a narrower range (pipeline has stabilized). When min and max converge, you've reached steady state.</p>
 </div>
 """, unsafe_allow_html=True)
 
         st.markdown("#### What to do with the results")
-        st.markdown(f"""
+        if is_cashflow:
+            st.markdown("""
+<div class="context-block">
+<ul>
+<li><strong>Use the final-year average FTE</strong> as the planning baseline for long-term hiring</li>
+<li><strong>Use peak monthly FTE</strong> to size the maximum staffing capacity you need</li>
+<li><strong>Look at the year-by-year breakdown</strong> to understand when hiring surges and lulls will occur</li>
+<li><strong>Look at Research vs Developer split</strong> to decide which roles to prioritise</li>
+<li><strong>Test sensitivity</strong> — go back, change one assumption (e.g. budget, portfolio mix), and regenerate to see how it moves the needle</li>
+<li><strong>Download the Excel</strong> for offline review, presentations, or sharing with leadership</li>
+</ul>
+</div>
+""", unsafe_allow_html=True)
+        else:
+            st.markdown("""
 <div class="context-block">
 <ul>
 <li><strong>Use the steady-state headcount</strong> (the last KPI card) as the basis for long-term hiring plans — this is where the pipeline settles</li>
@@ -1048,7 +1161,24 @@ You tell it how much money you have and what types of projects you run. It tells
             st.info("No data.")
         else:
             st.markdown("#### Month-by-month project load and FTE demand")
-            st.markdown('<div class="section-intro">Each row shows one project type, one stage, one month. "Effective projects" = number of active projects, adjusted for ramp-up if set.</div>', unsafe_allow_html=True)
+            if is_cashflow:
+                st.markdown(
+                    '<div class="section-intro">'
+                    '<strong>Cash-flow budgeting:</strong> Project counts vary year to year because each '
+                    "year's budget must cover ongoing project costs before funding new starts. "
+                    'Months with zero new starts reflect years where the budget was fully consumed by '
+                    'ongoing projects. Each row shows one project type, one stage, one month.'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    '<div class="section-intro">'
+                    'Each row shows one project type, one stage, one month. '
+                    '"Effective projects" = number of active projects, adjusted for ramp-up if set.'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
 
             disp = monthly.copy()
             disp["Month"] = disp["month"].dt.strftime("%Y-%m")
@@ -1096,9 +1226,32 @@ You tell it how much money you have and what types of projects you run. It tells
             st.info("No data.")
         else:
             st.markdown("#### Average monthly FTE by year")
-            st.markdown('<div class="section-intro">Avg = average across all months in the year. Min/Max = the lowest and highest single-month FTE that year (reflects pipeline build-up and seasonal intake variation).</div>', unsafe_allow_html=True)
+            if is_cashflow:
+                st.markdown(
+                    '<div class="section-intro">'
+                    '<strong>Cash-flow budgeting:</strong> The annual budget covers all active projects '
+                    '(ongoing from prior years + new starts). Project counts vary year to year as ongoing '
+                    'costs fluctuate. This table shows the resulting FTE demand per year.'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    '<div class="section-intro">'
+                    'Avg = average across all months in the year. Min/Max = the lowest and highest '
+                    'single-month FTE that year (reflects pipeline build-up and seasonal intake variation).'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
 
             ann_disp = result.annual_summary.copy()
+
+            _yp_for_ann = result.yearly_projects
+            ann_disp.insert(
+                1, "New projects",
+                ann_disp["Year"].map(lambda y: round(_yp_for_ann.get(y, 0), 1)),
+            )
+
             if has_contingency:
                 ann_disp["Adj Avg FTE"] = (
                     ann_disp["Avg Research FTE"] * (1 + cr)
@@ -1108,6 +1261,13 @@ You tell it how much money you have and what types of projects you run. It tells
                 ann_disp["Adj Max FTE"] = (ann_disp["Max monthly FTE"] * (1 + max(cr, cd))).round(1)
 
             st.dataframe(ann_disp, use_container_width=True, hide_index=True)
+
+            if is_cashflow:
+                st.caption(
+                    "Under cash-flow budgeting, project counts oscillate because each year's budget "
+                    "must first cover ongoing costs from prior cohorts before funding new starts."
+                )
+
             st.download_button("Download CSV", ann_disp.to_csv(index=False),
                                "fte_annual.csv", "text/csv")
 
@@ -1116,11 +1276,18 @@ You tell it how much money you have and what types of projects you run. It tells
         st.markdown("#### All assumptions used in this run")
         st.markdown('<div class="section-intro">Every number in the model traces back to one of these inputs.</div>', unsafe_allow_html=True)
 
+        _budget_mode_label = "Cash-flow" if is_cashflow else "Commitment"
+        _budget_mode_meaning = (
+            "Annual budget covers all active projects (ongoing + new)"
+            if is_cashflow
+            else "Annual budget funds full lifecycle cost of new projects upfront"
+        )
         st.markdown('<div class="card"><h5>1. Budget</h5>', unsafe_allow_html=True)
         st.dataframe(pd.DataFrame([
+            {"Assumption": "Budget model", "Value": _budget_mode_label, "Type": "Input", "Meaning": _budget_mode_meaning},
             {"Assumption": "Total R&D budget", "Value": f"{cfg.total_budget_m:,.0f} M", "Type": "Input", "Meaning": "Gross annual R&D spend"},
             {"Assumption": "Overhead", "Value": f"{cfg.overhead_pct*100:.0f}%", "Type": "Input", "Meaning": "Admin, facilities, management"},
-            {"Assumption": "Net project budget", "Value": f"{cfg.total_budget_m*(1-cfg.overhead_pct):,.0f} M", "Type": "Derived", "Meaning": "Total × (1 – Overhead)"},
+            {"Assumption": "Net project budget", "Value": f"{cfg.total_budget_m*(1-cfg.overhead_pct):,.0f} M", "Type": "Derived", "Meaning": "Total x (1 - Overhead)"},
         ]), use_container_width=True, hide_index=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1187,50 +1354,76 @@ You tell it how much money you have and what types of projects you run. It tells
         except Exception:
             wc = 0
         derived_rows = [
-            {"Metric": "Weighted cost per project (Phase 1)" if has_phase2 else "Weighted cost per project",
+            {"Metric": "Weighted lifecycle cost per project",
              "Value": f"{wc:,.1f} M",
              "How": "Portfolio-weighted expected cost across all stages"},
-            {"Metric": "Projects per year (Phase 1)" if has_phase2 else "Projects per year",
-             "Value": f"{_projects_for_year(cfg, cfg.start_year):,.1f}" if has_phase2 else f"{result.projects_per_year:,.1f}",
-             "How": f"Net budget ({cfg.total_budget_m*(1-cfg.overhead_pct):,.0f} M) ÷ cost per project ({wc:,.1f} M)"},
         ]
-        if has_phase2:
-            try:
-                wc2 = _weighted_cost_per_project(cfg, cfg.stage_mix_phase2)
-            except Exception:
-                wc2 = 0
-            derived_rows += [
-                {"Metric": "Weighted cost per project (Phase 2)",
-                 "Value": f"{wc2:,.1f} M",
-                 "How": f"With Phase 2 mix from {cfg.phase2_start_year}"},
-                {"Metric": "Projects per year (Phase 2)",
-                 "Value": f"{_projects_for_year(cfg, cfg.phase2_start_year):,.1f}",
-                 "How": f"Net budget ÷ Phase 2 cost per project ({wc2:,.1f} M)"},
-            ]
+        if is_cashflow:
+            _how_proj = "Annual budget minus ongoing project costs, then divided by partial-year cost of a new project"
+        else:
+            _how_proj = "Annual net budget divided by weighted full lifecycle cost per project"
+        yp = result.yearly_projects
+        for y in range(cfg.start_year, cfg.end_year + 1):
+            derived_rows.append({
+                "Metric": f"New projects in {y}",
+                "Value": f"{yp.get(y, 0):,.1f}",
+                "How": _how_proj,
+            })
+        if is_cashflow:
+            _total_new = sum(yp.get(y, 0) for y in range(cfg.start_year, cfg.end_year + 1))
+            derived_rows.append({
+                "Metric": "Total new projects (all years)",
+                "Value": f"{_total_new:,.1f}",
+                "How": "Sum of new project starts across all years",
+            })
         derived_rows += [
             {"Metric": f"Avg FTE in {cfg.end_year}",
              "Value": f"{result.steady_state_avg:,.0f}",
              "How": f"Average monthly total FTE in {cfg.end_year}"},
             {"Metric": f"FTE range in {cfg.end_year}",
-             "Value": f"{result.steady_state_min_month:,.0f} – {result.steady_state_max_month:,.0f}",
+             "Value": f"{result.steady_state_min_month:,.0f} - {result.steady_state_max_month:,.0f}",
              "How": f"Min to max monthly FTE in {cfg.end_year}"},
         ]
+        if is_cashflow:
+            all_ftes = [monthly["fte_total"].max()] if not monthly.empty else [0]
+            peak_fte = monthly.groupby(monthly["month"].dt.to_period("M"))["fte_total"].sum().max() if not monthly.empty else 0
+            derived_rows.append({
+                "Metric": "Peak monthly FTE (any month)",
+                "Value": f"{peak_fte:,.0f}",
+                "How": "Highest single-month total FTE across all years",
+            })
         st.dataframe(pd.DataFrame(derived_rows), use_container_width=True, hide_index=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
-        with st.expander("7. Structural assumptions (built into the model)"):
-            st.dataframe(pd.DataFrame([
+        with st.expander("8. Structural assumptions (built into the model)"):
+            _structural = [
                 {"Assumption": "Monthly granularity", "Meaning": "Projects and FTE tracked monthly"},
                 {"Assumption": "Constant FTE per project", "Meaning": "Flat staffing for full duration (unless ramp set)"},
                 {"Assumption": "Additive conversion", "Meaning": "Stage survivors add to next-stage direct allocation"},
-                {"Assumption": "Independent annual cohorts", "Meaning": "No carry-over between years"},
+            ]
+            if is_cashflow:
+                _structural.append(
+                    {"Assumption": "Cash-flow budget constraint",
+                     "Meaning": "Each year's budget must cover ongoing costs first; remainder funds new projects"}
+                )
+                _structural.append(
+                    {"Assumption": "Year-to-year carry-over",
+                     "Meaning": "Ongoing project costs from prior years reduce the budget available for new starts"}
+                )
+            else:
+                _structural.append(
+                    {"Assumption": "Independent annual cohorts",
+                     "Meaning": "No carry-over of costs between years; each year's budget funds new projects only"}
+                )
+            _structural += [
                 {"Assumption": "No mid-stage failure", "Meaning": "Projects run to completion once started"},
-                {"Assumption": "No economies of scale", "Meaning": "Cost per project is constant"},
-                {"Assumption": "Constant annual budget", "Meaning": "Same budget every year"},
+                {"Assumption": "No economies of scale", "Meaning": "Cost per project is constant regardless of volume"},
+                {"Assumption": "Constant annual budget", "Meaning": "Same gross budget every year"},
                 {"Assumption": "Two FTE roles", "Meaning": "Research and Developer only"},
                 {"Assumption": "Uniform intake spread", "Meaning": "Even distribution across intake window"},
                 {"Assumption": "Linear pipeline", "Meaning": "No branching or looping between stages"},
-            ]), use_container_width=True, hide_index=True)
+            ]
+            st.dataframe(pd.DataFrame(_structural), use_container_width=True, hide_index=True)
 
     # ── Excel download ──
     st.divider()
@@ -1251,13 +1444,10 @@ You tell it how much money you have and what types of projects you run. It tells
 # ═══════════════════════════════════════════════════════════════════════════
 def _generate_excel(cfg: ModelConfig, result) -> bytes:
     has_phase2 = cfg.phase2_start_year > 0 and bool(cfg.stage_mix_phase2)
-    if has_phase2:
-        _proj_p1 = _projects_for_year(cfg, cfg.start_year)
-        _proj_p2 = _projects_for_year(cfg, cfg.phase2_start_year)
-        _proj_kpi_value = (
-            f"{_proj_p1:,.0f}/yr ({cfg.start_year}–{cfg.phase2_start_year - 1}), "
-            f"{_proj_p2:,.0f}/yr ({cfg.phase2_start_year}+)"
-        )
+    yp = result.yearly_projects
+    if yp:
+        yr_parts = [f"{yp.get(y, 0):,.0f}" for y in range(cfg.start_year, cfg.end_year + 1)]
+        _proj_kpi_value = " / ".join(yr_parts) + f" ({cfg.start_year}\u2013{cfg.end_year})"
     else:
         _proj_kpi_value = f"{result.projects_per_year:,.0f}"
 

@@ -34,6 +34,8 @@ class ModelConfig:
     start_year: int = 2026
     end_year: int = 2029
 
+    budget_mode: str = "cashflow"  # "cashflow" or "commitment"
+
     pipeline_stages: List[str] = field(
         default_factory=lambda: ["TRL 1-4", "TRL 5-7"]
     )
@@ -69,3 +71,4 @@ class ModelResult:
     steady_state_min_month: float
     steady_state_max_month: float
     projects_per_year: float
+    yearly_projects: Dict[int, float] = field(default_factory=dict)

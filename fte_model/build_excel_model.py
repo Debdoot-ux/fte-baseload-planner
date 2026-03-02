@@ -61,26 +61,34 @@ def _cmt(text):
 ARCHETYPES = [
     {
         "name": "Chemistry",
-        "share": 0.15,
+        "share": 0.20,
         "stages": {
-            "TRL 1-4": {"dur": 7, "cost": 6.5, "res": 3.5, "dev": 1.5},
-            "TRL 5-7": {"dur": 12, "cost": 12.5, "res": 1.5, "dev": 3.5},
+            "TRL 1-4": {"dur": 7, "cost": 4.0, "res": 3.5, "dev": 1.5},
+            "TRL 5-7": {"dur": 21, "cost": 8.0, "res": 1.5, "dev": 3.5},
         },
     },
     {
-        "name": "Process (Hardware)",
-        "share": 0.70,
+        "name": "Hardware: Mechanical",
+        "share": 0.30,
         "stages": {
-            "TRL 1-4": {"dur": 9, "cost": 12.5, "res": 6.5, "dev": 1.5},
-            "TRL 5-7": {"dur": 15, "cost": 15.0, "res": 1.5, "dev": 6.5},
+            "TRL 1-4": {"dur": 9, "cost": 5.0, "res": 3.5, "dev": 1.5},
+            "TRL 5-7": {"dur": 21, "cost": 35.0, "res": 1.5, "dev": 3.5},
+        },
+    },
+    {
+        "name": "Hardware: Process",
+        "share": 0.30,
+        "stages": {
+            "TRL 1-4": {"dur": 24, "cost": 15.0, "res": 6.5, "dev": 1.5},
+            "TRL 5-7": {"dur": 75, "cost": 50.0, "res": 1.5, "dev": 6.5},
         },
     },
     {
         "name": "Algorithm (Software)",
-        "share": 0.15,
+        "share": 0.20,
         "stages": {
-            "TRL 1-4": {"dur": 6, "cost": 4.25, "res": 0.5, "dev": 0.5},
-            "TRL 5-7": {"dur": 6, "cost": 4.25, "res": 0.5, "dev": 0.5},
+            "TRL 1-4": {"dur": 9, "cost": 2.0, "res": 0.5, "dev": 0.5},
+            "TRL 5-7": {"dur": 9, "cost": 5.0, "res": 0.5, "dev": 0.5},
         },
     },
 ]
@@ -149,8 +157,8 @@ def build_inputs_sheet(wb):
     row += 1
 
     labels_budget = [
-        ("Total R&D budget (USD millions)", 400, "Budget", True, None,
-         "Your total annual R&D budget in USD millions.\nThis is the gross figure before any deductions."),
+        ("Total R&D budget (MYR millions)", 400, "Budget", True, None,
+         "Your total annual R&D budget in MYR millions.\nThis is the gross figure before any deductions."),
         ("Overhead deduction (%)", 0.30, "Overhead", True, "0%",
          "What percentage of the budget goes to overhead (admin, facilities, management).\n"
          "Enter as a decimal: 0.30 = 30%.\nThe remainder is what actually funds projects."),
@@ -160,7 +168,7 @@ def build_inputs_sheet(wb):
         None,
         ("First year of new projects", 2026, "StartYear", False, "0",
          "The first calendar year when new projects begin.\nProjects from this year may still be running in later years."),
-        ("Last year of new projects", 2029, "EndYear", False, "0",
+        ("Last year of new projects", 2030, "EndYear", False, "0",
          "The last calendar year when new projects are started.\n"
          "Projects already in progress continue beyond this year until they finish."),
         ("Intake window (months per year)", 6, "IntakeMonths", True, "0",
@@ -214,7 +222,7 @@ def build_inputs_sheet(wb):
         ("TRL 1-4: % of new projects that start here", 0.20, "Alloc_Early", "0%",
          "Of all new projects started each year, what percentage enters the pipeline at the early stage (TRL 1\u20134)?\n"
          "Enter as a decimal: 0.20 = 20%.\nThis + the TRL 5\u20137 allocation below should add to 100%."),
-        ("TRL 1-4: % of completers that advance to TRL 5-7", 0.50, "Conv_Early", "0%",
+        ("TRL 1-4: % of completers that advance to TRL 5-7", 0.40, "Conv_Early", "0%",
          "Of projects that finish TRL 1\u20134, what percentage advances to TRL 5\u20137?\n"
          "Enter as a decimal: 0.50 = 50%.\nThe rest are considered complete (or shelved) after the early stage."),
         ("TRL 5-7: % of new projects that start here directly", 0.80, "Alloc_Late", "0%",
@@ -299,11 +307,12 @@ def build_inputs_sheet(wb):
     ws.cell(row=row, column=2, value="What share of your projects fall into each type? Must add to 100%.").font = note_font
     row += 1
 
-    arch_share_names = ["Share_Chem", "Share_HW", "Share_SW"]
+    arch_share_names = ["Share_Chem", "Share_HWM", "Share_HWP", "Share_SW"]
     share_comments = [
-        "Percentage of your projects that are Chemistry-type.\nEnter as a decimal: 0.15 = 15%.",
-        "Percentage of your projects that are Process (Hardware)-type.\nEnter as a decimal: 0.70 = 70%.",
-        "Percentage of your projects that are Algorithm (Software)-type.\nEnter as a decimal: 0.15 = 15%.",
+        "Percentage of your projects that are Chemistry-type.\nEnter as a decimal: 0.20 = 20%.",
+        "Percentage of your projects that are Hardware: Mechanical-type.\nEnter as a decimal: 0.30 = 30%.",
+        "Percentage of your projects that are Hardware: Process-type.\nEnter as a decimal: 0.30 = 30%.",
+        "Percentage of your projects that are Algorithm (Software)-type.\nEnter as a decimal: 0.20 = 20%.",
     ]
     for ai, arch in enumerate(ARCHETYPES):
         ws.cell(row=row, column=2, value=f"{arch['name']} (%)").font = label_font
@@ -315,7 +324,7 @@ def build_inputs_sheet(wb):
         row += 1
 
     ws.cell(row=row, column=2, value="Total portfolio share").font = label_font
-    ws.cell(row=row, column=3, value="=Share_Chem+Share_HW+Share_SW")
+    ws.cell(row=row, column=3, value="=Share_Chem+Share_HWM+Share_HWP+Share_SW")
     ws.cell(row=row, column=3).number_format = "0%"
     _style_data_cell(ws, row, 3, is_formula=True)
     ws.cell(row=row, column=3).comment = _cmt("Sanity check: should equal 100%.\nDo not edit \u2014 this is a formula.")
@@ -327,7 +336,7 @@ def build_inputs_sheet(wb):
         "PROJECT TYPE PARAMETERS\n"
         "For each project type and pipeline stage, set:\n"
         "\u2022 Duration \u2014 how many months a project takes in this stage\n"
-        "\u2022 Cost \u2014 total cost (USD millions) for one project in this stage\n"
+        "\u2022 Cost \u2014 total cost (MYR millions) for one project in this stage\n"
         "\u2022 Research FTE \u2014 number of researchers working on one project at any time\n"
         "\u2022 Developer FTE \u2014 number of developers working on one project at any time\n\n"
         "These are your best estimates. The model uses them to calculate total headcount."
@@ -337,7 +346,7 @@ def build_inputs_sheet(wb):
     ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=6)
     row += 1
 
-    arch_short = ["Chem", "HW", "SW"]
+    arch_short = ["Chem", "HWM", "HWP", "SW"]
     stage_short = ["E", "L"]
     stage_names = ["TRL 1-4", "TRL 5-7"]
 
@@ -379,7 +388,7 @@ def build_inputs_sheet(wb):
                 if first_archetype and si == 0:
                     hints = {
                         "Dur": f"How many months one {arch['name']} project spends in {sname}.",
-                        "Cost": f"Total cost (USD M) of one {arch['name']} project during {sname}.",
+                        "Cost": f"Total cost (MYR M) of one {arch['name']} project during {sname}.",
                         "Res": f"Number of researchers assigned to one {arch['name']} {sname} project at any given time.",
                         "Dev": f"Number of developers assigned to one {arch['name']} {sname} project at any given time.",
                     }
@@ -414,7 +423,8 @@ def build_inputs_sheet(wb):
 
     wc_formula = (
         "=Share_Chem*(Alloc_Early*(Chem_E_Cost + Conv_Early*Chem_L_Cost) + Alloc_Late*Chem_L_Cost)"
-        "+Share_HW*(Alloc_Early*(HW_E_Cost + Conv_Early*HW_L_Cost) + Alloc_Late*HW_L_Cost)"
+        "+Share_HWM*(Alloc_Early*(HWM_E_Cost + Conv_Early*HWM_L_Cost) + Alloc_Late*HWM_L_Cost)"
+        "+Share_HWP*(Alloc_Early*(HWP_E_Cost + Conv_Early*HWP_L_Cost) + Alloc_Late*HWP_L_Cost)"
         "+Share_SW*(Alloc_Early*(SW_E_Cost + Conv_Early*SW_L_Cost) + Alloc_Late*SW_L_Cost)"
     )
 
@@ -435,24 +445,30 @@ def build_inputs_sheet(wb):
     ws.cell(row=row, column=4, value="Portfolio-weighted average cost, accounting for stage mix and conversion").font = note_font
     row += 1
 
-    ws.cell(row=row, column=2, value="Projects per year").font = label_font
-    ws.cell(row=row, column=2).border = thin_border
-    c_pp = ws.cell(row=row, column=3, value="=IF(WtdCost>0, NetBudget/WtdCost, 0)")
-    c_pp.number_format = "#,##0.0"
-    _style_data_cell(ws, row, 3, is_formula=True)
-    wb.defined_names.add(DefinedName("ProjPerYr", attr_text=f"Inputs!$C${row}"))
-    c_pp.comment = _cmt(
-        "How many new projects the net budget can fund each year.\n"
-        "= Net project budget \u00f7 Weighted cost per project."
+    wd_formula = (
+        "=Share_Chem*(Alloc_Early*(Chem_E_Dur + Conv_Early*Chem_L_Dur) + Alloc_Late*Chem_L_Dur)"
+        "+Share_HWM*(Alloc_Early*(HWM_E_Dur + Conv_Early*HWM_L_Dur) + Alloc_Late*HWM_L_Dur)"
+        "+Share_HWP*(Alloc_Early*(HWP_E_Dur + Conv_Early*HWP_L_Dur) + Alloc_Late*HWP_L_Dur)"
+        "+Share_SW*(Alloc_Early*(SW_E_Dur + Conv_Early*SW_L_Dur) + Alloc_Late*SW_L_Dur)"
     )
-
-    ws.cell(row=row, column=4, value="Net budget \u00f7 weighted cost per project").font = note_font
+    ws.cell(row=row, column=2, value="Weighted duration (months)").font = label_font
+    ws.cell(row=row, column=2).border = thin_border
+    c_wd = ws.cell(row=row, column=3, value=wd_formula)
+    c_wd.number_format = "0.0"
+    _style_data_cell(ws, row, 3, is_formula=True)
+    wb.defined_names.add(DefinedName("WtdDur", attr_text=f"Inputs!$C${row}"))
+    c_wd.comment = _cmt(
+        "Portfolio-weighted average project lifecycle duration in months.\n"
+        "Used by the Budget sheet for cash-flow calculations."
+    )
+    ws.cell(row=row, column=4, value="Portfolio-weighted avg lifecycle duration").font = note_font
     row += 1
 
     # Phase 2 weighted cost
     wc_p2_formula = (
         "=Share_Chem*(Alloc_Early_P2*(Chem_E_Cost + Conv_Early*Chem_L_Cost) + Alloc_Late_P2*Chem_L_Cost)"
-        "+Share_HW*(Alloc_Early_P2*(HW_E_Cost + Conv_Early*HW_L_Cost) + Alloc_Late_P2*HW_L_Cost)"
+        "+Share_HWM*(Alloc_Early_P2*(HWM_E_Cost + Conv_Early*HWM_L_Cost) + Alloc_Late_P2*HWM_L_Cost)"
+        "+Share_HWP*(Alloc_Early_P2*(HWP_E_Cost + Conv_Early*HWP_L_Cost) + Alloc_Late_P2*HWP_L_Cost)"
         "+Share_SW*(Alloc_Early_P2*(SW_E_Cost + Conv_Early*SW_L_Cost) + Alloc_Late_P2*SW_L_Cost)"
     )
     ws.cell(row=row, column=2, value="Weighted cost per project — after allocation shift (M)").font = label_font
@@ -469,17 +485,23 @@ def build_inputs_sheet(wb):
     ws.cell(row=row, column=4, value="Same formula, but with Phase 2 allocations").font = note_font
     row += 1
 
-    ws.cell(row=row, column=2, value="Projects per year — after allocation shift").font = label_font
-    ws.cell(row=row, column=2).border = thin_border
-    c_pp2 = ws.cell(row=row, column=3, value="=IF(WtdCost_P2>0, NetBudget/WtdCost_P2, 0)")
-    c_pp2.number_format = "#,##0.0"
-    _style_data_cell(ws, row, 3, is_formula=True)
-    wb.defined_names.add(DefinedName("ProjPerYr_P2", attr_text=f"Inputs!$C${row}"))
-    c_pp2.comment = _cmt(
-        "Projects per year after the allocation shift.\n"
-        "= Net project budget \u00f7 Phase 2 weighted cost per project."
+    wd_p2_formula = (
+        "=Share_Chem*(Alloc_Early_P2*(Chem_E_Dur + Conv_Early*Chem_L_Dur) + Alloc_Late_P2*Chem_L_Dur)"
+        "+Share_HWM*(Alloc_Early_P2*(HWM_E_Dur + Conv_Early*HWM_L_Dur) + Alloc_Late_P2*HWM_L_Dur)"
+        "+Share_HWP*(Alloc_Early_P2*(HWP_E_Dur + Conv_Early*HWP_L_Dur) + Alloc_Late_P2*HWP_L_Dur)"
+        "+Share_SW*(Alloc_Early_P2*(SW_E_Dur + Conv_Early*SW_L_Dur) + Alloc_Late_P2*SW_L_Dur)"
     )
-    ws.cell(row=row, column=4, value="Net budget \u00f7 post-shift weighted cost").font = note_font
+    ws.cell(row=row, column=2, value="Weighted duration — after allocation shift (months)").font = label_font
+    ws.cell(row=row, column=2).border = thin_border
+    c_wd2 = ws.cell(row=row, column=3, value=wd_p2_formula)
+    c_wd2.number_format = "0.0"
+    _style_data_cell(ws, row, 3, is_formula=True)
+    wb.defined_names.add(DefinedName("WtdDur_P2", attr_text=f"Inputs!$C${row}"))
+    c_wd2.comment = _cmt(
+        "Phase 2 version of weighted duration.\n"
+        "Used by Budget sheet for years when allocation has shifted."
+    )
+    ws.cell(row=row, column=4, value="Same formula, Phase 2 allocations").font = note_font
     row += 1
 
     # ── CONTINGENCY ──
@@ -526,6 +548,70 @@ def build_inputs_sheet(wb):
 
 
 # ═════════════════════════════════════════════════════════════════════════
+# SHEET: BUDGET (Cash-flow model — per-year project counts)
+# One row per intake year (2026–2030). Does NOT reference Engine.
+# Data flow: Inputs → Budget → Engine → Output
+# ═════════════════════════════════════════════════════════════════════════
+def build_budget_sheet(wb, yearly_projects: dict):
+    """Write pre-computed project counts from the Python cash-flow model.
+
+    `yearly_projects` is {year: count} from model._compute_yearly_projects().
+    Values are written as constants so the Engine sheet gets the exact same
+    numbers as the Streamlit dashboard.
+    """
+    ws = wb.create_sheet("Budget")
+    ws.sheet_properties.tabColor = TEAL
+
+    ws.column_dimensions["A"].width = 3
+    ws.column_dimensions["B"].width = 12
+    ws.column_dimensions["C"].width = 18
+
+    ws["B2"] = "Budget \u2014 Cash-Flow Project Counts"
+    ws["B2"].font = title_font
+    ws["B3"] = (
+        "Pre-computed from the Python cash-flow model (matches the dashboard). "
+        "Ongoing costs from prior-year projects are deducted before funding new starts. "
+        "Re-run build_excel_model.py to refresh after changing defaults."
+    )
+    ws["B3"].font = note_font
+    ws["B2"].comment = _cmt(
+        "BUDGET SHEET \u2014 PRE-COMPUTED FROM PYTHON MODEL\n\n"
+        "These project counts are computed by the same cash-flow engine\n"
+        "that powers the Streamlit dashboard, so the numbers match exactly.\n\n"
+        "The Python model tracks per-archetype/stage burn rates and\n"
+        "per-intake-month cohorts \u2014 too granular for Excel formulas.\n\n"
+        "To refresh: re-run build_excel_model.py after editing defaults.py."
+    )
+
+    _style_header_row(ws, 4, 2, 3)
+    ws.cell(row=4, column=2, value="Year")
+    ws.cell(row=4, column=3, value="New projects")
+    row_start = 5
+
+    years_sorted = sorted(yearly_projects.keys())
+    for yi, year in enumerate(years_sorted):
+        r = row_start + yi
+        year_idx = yi + 1
+        count = yearly_projects[year]
+
+        ws.cell(row=r, column=2, value=year)
+        ws.cell(row=r, column=2).number_format = "0"
+        ws.cell(row=r, column=2).font = bold_font
+        _style_data_cell(ws, r, 2, is_formula=False)
+
+        ws.cell(row=r, column=3, value=round(count, 4))
+        ws.cell(row=r, column=3).number_format = "#,##0.0"
+        ws.cell(row=r, column=3).font = input_font
+        _style_data_cell(ws, r, 3, is_formula=False)
+
+        wb.defined_names.add(
+            DefinedName(f"Proj_Y{year_idx}", attr_text=f"Budget!$C${r}")
+        )
+
+    return ws
+
+
+# ═════════════════════════════════════════════════════════════════════════
 # SHEET: GLOSSARY (How This Model Works)
 # ═════════════════════════════════════════════════════════════════════════
 def build_glossary_sheet(wb):
@@ -554,12 +640,12 @@ def build_glossary_sheet(wb):
         ("Step 1: Start with the money", Font(name="Calibri", size=10, bold=True, color=NAVY)),
         ("Total R&D budget minus overhead = net project budget.", label_font),
         ("", None),
-        ("Step 2: Figure out how many projects you can afford", Font(name="Calibri", size=10, bold=True, color=NAVY)),
-        ("Net budget \u00f7 weighted average cost per project = projects per year.", label_font),
+        ("Step 2: Figure out how many projects you can afford (cash-flow budgeting)", Font(name="Calibri", size=10, bold=True, color=NAVY)),
+        ("The Budget sheet computes per-year project counts: ongoing projects consume budget first; remaining budget funds new projects.", label_font),
         ("The cost is weighted by your portfolio mix and which stages projects go through.", label_font),
         ("", None),
         ("Step 3: Distribute projects across types and stages", Font(name="Calibri", size=10, bold=True, color=NAVY)),
-        ("Projects are split across archetypes (Chemistry, Hardware, Software) by portfolio share.", label_font),
+        ("Projects are split across archetypes (Chemistry, Hardware: Mechanical, Hardware: Process, Algorithm Software) by portfolio share.", label_font),
         ("Within each type, some start at TRL 1-4 (early) and some start directly at TRL 5-7 (late).", label_font),
         ("When early-stage projects finish, a percentage advance to TRL 5-7 as additional projects.", label_font),
         ("", None),
@@ -576,7 +662,7 @@ def build_glossary_sheet(wb):
         ("", None),
         ("Why does headcount grow at first?", Font(name="Calibri", size=10, bold=True, color=NAVY)),
         ("In Year 1, projects start but none have finished yet \u2014 the pipeline only fills up.", label_font),
-        ("In Year 2, new projects start while Year 1 projects are still running. Headcount keeps climbing", label_font),
+        ("In Year 2, ongoing projects from Year 1 consume budget first; remaining budget funds new projects. Headcount keeps climbing", label_font),
         ("until the rate of new starts roughly equals the rate of completions.", label_font),
         ("Once that happens, headcount stabilizes \u2014 this is the STEADY STATE.", label_font),
         ("The steady-state headcount is the long-run staffing level your hiring plan should target.", label_font),
@@ -600,7 +686,7 @@ def build_glossary_sheet(wb):
         ("(Changing these would require rebuilding the sheet structure)", note_font),
         ("", None),
         ("\u2022 2 pipeline stages (TRL 1-4 and TRL 5-7)", label_font),
-        ("\u2022 3 project types (Chemistry, Process Hardware, Algorithm Software)", label_font),
+        ("\u2022 4 project types (Chemistry, Hardware: Mechanical, Hardware: Process, Algorithm Software)", label_font),
         ("\u2022 2 FTE roles (Research and Developer)", label_font),
         ("\u2022 Monthly granularity \u2014 projects tracked month by month", label_font),
         ("\u2022 No ramp-up \u2014 projects start at full staffing immediately", label_font),
@@ -612,6 +698,7 @@ def build_glossary_sheet(wb):
         ("", None),
         ("SHEET GUIDE", section_font),
         ("Inputs \u2014 the only sheet you need to edit. All yellow cells are changeable.", label_font),
+        ("Budget \u2014 cash-flow model: ongoing cost, available budget, new project count per year. References Inputs only.", label_font),
         ("Engine \u2014 monthly calculations for all archetypes and stages. All formulas.", label_font),
         ("Output \u2014 annual averages and within-year range from the engine. All formulas.", label_font),
         ("", None),
@@ -655,10 +742,10 @@ def build_engine_sheet(wb):
     ws = wb.create_sheet("Engine")
     ws.sheet_properties.tabColor = BLUE
 
-    arch_short = ["Chem", "HW", "SW"]
-    share_names = ["Share_Chem", "Share_HW", "Share_SW"]
+    arch_short = ["Chem", "HWM", "HWP", "SW"]
+    share_names = ["Share_Chem", "Share_HWM", "Share_HWP", "Share_SW"]
 
-    n_months = 60
+    n_months = 156
     data_start_row = 4
     ds = 3  # used in offset arithmetic within formulas
 
@@ -675,7 +762,7 @@ def build_engine_sheet(wb):
         for c in range(start_c, start_c + cols_per_arch):
             ws.cell(row=2, column=c).fill = navy_fill
 
-    totals_col = arch_start_col + 3 * cols_per_arch  # column AF (col 32)
+    totals_col = arch_start_col + 4 * cols_per_arch  # 4 archetypes × 9 cols
     ws.merge_cells(start_row=2, start_column=totals_col, end_row=2, end_column=totals_col + 2)
     ws.cell(row=2, column=totals_col, value="TOTALS").font = Font(name="Calibri", size=10, bold=True, color=WHITE)
     ws.cell(row=2, column=totals_col).fill = navy_fill
@@ -702,7 +789,7 @@ def build_engine_sheet(wb):
         "Late Conv Starts", "Late Direct Starts", "Late Total Starts", "Late Active",
         "Research FTE", "Developer FTE", "Total FTE",
     ]
-    for ai in range(3):
+    for ai in range(4):
         sc = arch_start_col + ai * cols_per_arch
         for si, sh in enumerate(sub_headers):
             ws.cell(row=3, column=sc + si, value=sh)
@@ -727,8 +814,8 @@ def build_engine_sheet(wb):
     # Comments on headers
     ws.cell(row=2, column=2).comment = _cmt(
         "ENGINE SHEET \u2014 ALL FORMULAS, DO NOT EDIT\n\n"
-        "Each row = one month. 60 rows = 5 years of monthly tracking.\n"
-        "Each archetype (Chemistry, Hardware, Software) has its own block of columns.\n\n"
+        "Each row = one month. 156 rows = 13 years of monthly tracking.\n"
+        "Each archetype (Chemistry, Hardware: Mechanical, Hardware: Process, Algorithm) has its own block of columns.\n\n"
         "Column groups per archetype:\n"
         "\u2022 Early Starts/mo \u2014 how many projects start in TRL 1\u20134 this month\n"
         "\u2022 Early Active \u2014 total TRL 1\u20134 projects running this month (sliding window)\n"
@@ -740,7 +827,7 @@ def build_engine_sheet(wb):
     )
     ws.cell(row=2, column=totals_col).comment = _cmt(
         "TOTALS \u2014 base headcount (before contingency)\n"
-        "Sum of Research/Developer/Total FTE across all three archetypes."
+        "Sum of Research/Developer/Total FTE across all four archetypes."
     )
     ws.cell(row=2, column=adj_col).comment = _cmt(
         "ADJUSTED TOTALS \u2014 headcount with contingency buffer\n"
@@ -798,7 +885,7 @@ def build_engine_sheet(wb):
         ws.cell(row=r, column=3, value=f"=YEAR(B{r})")
         ws.cell(row=r, column=4, value=f"=MONTH(B{r})")
 
-        for ai in range(3):
+        for ai in range(4):
             sc = arch_start_col + ai * cols_per_arch
             ashort = arch_short[ai]
             share = share_names[ai]
@@ -820,12 +907,13 @@ def build_engine_sheet(wb):
             res_late = f"{ashort}_L_Res"
             dev_late = f"{ashort}_L_Dev"
 
-            # Early Direct Starts per month (phase-aware)
+            # Early Direct Starts per month (phase-aware, project count from Budget)
+            proj_lookup = f"IF(OR(C{r}<StartYear,C{r}>EndYear),0,INDEX(Budget!$C$5:$C$9,C{r}-StartYear+1))"
             ws.cell(row=r, column=sc).value = (
                 f"=IF(AND(C{r}>=StartYear, C{r}<=EndYear, D{r}<=IntakeMonths),"
                 f" IF(AND(Phase2_Year>0, C{r}>=Phase2_Year),"
-                f" ProjPerYr_P2*{share}*Alloc_Early_P2/IntakeMonths,"
-                f" ProjPerYr*{share}*Alloc_Early/IntakeMonths), 0)"
+                f" ({proj_lookup})*{share}*Alloc_Early_P2/IntakeMonths,"
+                f" ({proj_lookup})*{share}*Alloc_Early/IntakeMonths), 0)"
             )
             ws.cell(row=r, column=sc).number_format = "0.00"
 
@@ -847,12 +935,13 @@ def build_engine_sheet(wb):
             )
             ws.cell(row=r, column=sc + 2).number_format = "0.00"
 
-            # Late Direct Starts (phase-aware)
+            # Late Direct Starts (phase-aware, project count from Budget)
+            proj_lookup = f"IF(OR(C{r}<StartYear,C{r}>EndYear),0,INDEX(Budget!$C$5:$C$9,C{r}-StartYear+1))"
             ws.cell(row=r, column=sc + 3).value = (
                 f"=IF(AND(C{r}>=StartYear, C{r}<=EndYear, D{r}<=IntakeMonths),"
                 f" IF(AND(Phase2_Year>0, C{r}>=Phase2_Year),"
-                f" ProjPerYr_P2*{share}*Alloc_Late_P2/IntakeMonths,"
-                f" ProjPerYr*{share}*Alloc_Late/IntakeMonths), 0)"
+                f" ({proj_lookup})*{share}*Alloc_Late_P2/IntakeMonths,"
+                f" ({proj_lookup})*{share}*Alloc_Late/IntakeMonths), 0)"
             )
             ws.cell(row=r, column=sc + 3).number_format = "0.00"
 
@@ -887,8 +976,8 @@ def build_engine_sheet(wb):
             ws.cell(row=r, column=sc + 8).number_format = "0.0"
 
         # Grand Totals (base)
-        res_cols = [get_column_letter(arch_start_col + ai * cols_per_arch + 6) for ai in range(3)]
-        dev_cols = [get_column_letter(arch_start_col + ai * cols_per_arch + 7) for ai in range(3)]
+        res_cols = [get_column_letter(arch_start_col + ai * cols_per_arch + 6) for ai in range(4)]
+        dev_cols = [get_column_letter(arch_start_col + ai * cols_per_arch + 7) for ai in range(4)]
 
         ws.cell(row=r, column=totals_col).value = f"={'+'.join(f'{c}{r}' for c in res_cols)}"
         ws.cell(row=r, column=totals_col).number_format = "0.0"
@@ -900,12 +989,14 @@ def build_engine_sheet(wb):
         ws.cell(row=r, column=totals_col + 2).number_format = "0.0"
 
         # Adjusted Totals (with contingency)
-        ws.cell(row=r, column=adj_col).value = f"=AF{r}*(1+Cont_Res)"
+        tc_letter = get_column_letter(totals_col)
+        ws.cell(row=r, column=adj_col).value = f"={tc_letter}{r}*(1+Cont_Res)"
         ws.cell(row=r, column=adj_col).number_format = "0.0"
         ws.cell(row=r, column=adj_col).font = body_font
         ws.cell(row=r, column=adj_col).border = thin_border
 
-        ws.cell(row=r, column=adj_col + 1).value = f"=AG{r}*(1+Cont_Dev)"
+        tc1_letter = get_column_letter(totals_col + 1)
+        ws.cell(row=r, column=adj_col + 1).value = f"={tc1_letter}{r}*(1+Cont_Dev)"
         ws.cell(row=r, column=adj_col + 1).number_format = "0.0"
         ws.cell(row=r, column=adj_col + 1).font = body_font
         ws.cell(row=r, column=adj_col + 1).border = thin_border
@@ -916,7 +1007,7 @@ def build_engine_sheet(wb):
         ws.cell(row=r, column=adj_col + 2).border = thin_border
 
     # Hide only the Early Starts column per archetype (matching desktop file)
-    for ai in range(3):
+    for ai in range(4):
         sc = arch_start_col + ai * cols_per_arch
         col_letter = get_column_letter(sc)
         ws.column_dimensions[col_letter].hidden = True
@@ -945,7 +1036,7 @@ def build_output_sheet(wb, totals_col, adj_col):
 
     ws["B2"].comment = _cmt(
         "ANNUAL FTE SUMMARY\n\n"
-        "This sheet summarises the Engine's 60 months of data into yearly figures.\n"
+        "This sheet summarises the Engine's 156 months of data into yearly figures.\n"
         "All values are formulas \u2014 they update automatically when you change inputs.\n\n"
         "Columns B\u2013G: base headcount (before contingency).\n"
         "Columns H\u2013J: adjusted headcount (after contingency buffer).\n\n"
@@ -970,15 +1061,15 @@ def build_output_sheet(wb, totals_col, adj_col):
         cell = ws.cell(row=5, column=2 + ci, value=h)
         cell.comment = _cmt(comment)
 
-    tc_total = get_column_letter(totals_col + 2)  # AH = Total FTE
-    tc_res = get_column_letter(totals_col)          # AF = Total Research
-    tc_dev = get_column_letter(totals_col + 1)      # AG = Total Developer
-    tc_adj = get_column_letter(adj_col + 2)          # AK = Adj Total FTE
+    tc_total = get_column_letter(totals_col + 2)  # Total FTE
+    tc_res = get_column_letter(totals_col)       # Total Research
+    tc_dev = get_column_letter(totals_col + 1)   # Total Developer
+    tc_adj = get_column_letter(adj_col + 2)      # Adj Total FTE
 
     data_start = 4
-    data_end = 63
+    data_end = 159  # 156 months of data
 
-    n_years = 2029 - 2026 + 1
+    n_years = 5  # 2026–2030
     for yi in range(n_years):
         r = 6 + yi
         ws.cell(row=r, column=2, value=f"=StartYear+{yi}")
@@ -1067,10 +1158,23 @@ def build_output_sheet(wb, totals_col, adj_col):
 # MAIN
 # ═════════════════════════════════════════════════════════════════════════
 def main():
+    from defaults import default_baseline
+    from model import run_model
+
+    print("Running Python model to pre-compute project counts...")
+    cfg = default_baseline()
+    result = run_model(cfg)
+    yp = result.yearly_projects
+    for y in sorted(yp):
+        print(f"  {y}: {yp[y]:.2f} projects")
+
     wb = Workbook()
 
     print("Building Inputs sheet...")
     build_inputs_sheet(wb)
+
+    print("Building Budget sheet...")
+    build_budget_sheet(wb, yp)
 
     print("Building Glossary sheet...")
     build_glossary_sheet(wb)
@@ -1084,6 +1188,7 @@ def main():
     desired_order = [
         "Output",
         "Inputs",
+        "Budget",
         "Engine",
         "Glossary",
     ]
