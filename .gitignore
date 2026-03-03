@@ -3,6 +3,7 @@ __pycache__/
 *.xlsx
 venv/
 .venv/
+env
 env/
 .env
 *.egg-info/

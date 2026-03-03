@@ -32,7 +32,7 @@ class ModelConfig:
     total_budget_m: float = 400.0
     overhead_pct: float = 0.30
     start_year: int = 2026
-    end_year: int = 2029
+    end_year: int = 2030
 
     budget_mode: str = "cashflow"  # "cashflow" or "commitment"
 
@@ -45,7 +45,7 @@ class ModelConfig:
     )
 
     stage_conversion_rates: Dict[str, float] = field(
-        default_factory=lambda: {"TRL 1-4": 0.50}
+        default_factory=lambda: {"TRL 1-4": 0.40}
     )
 
     stage_mix_phase2: Dict[str, float] = field(default_factory=dict)

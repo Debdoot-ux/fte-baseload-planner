@@ -292,36 +292,41 @@ def _page_configure():
     is_custom = mode == "Full configuration"
 
     # ── Visual: How the model works (compact flow) ──
-    st.markdown("""
+    _is_cf = cfg.budget_mode == "cashflow"
+    _step2_title = "− Ongoing costs" if _is_cf else "÷ Cost per project"
+    _step2_desc = "Deduct running project spend" if _is_cf else "Weighted by project type mix"
+    _step3_title = "# New projects" if _is_cf else "# Projects / year"
+    _step3_desc = "Varies year to year" if _is_cf else "How many fit in the budget"
+    st.markdown(f"""
     <div class="flow-row">
         <div class="flow-box">
             <div class="flow-num">1</div>
-            <div class="flow-title">R&D Budget</div>
+            <div class="flow-title">R&amp;D Budget</div>
             <div class="flow-desc">Total spend minus overhead</div>
         </div>
-        <div class="flow-arrow">→</div>
+        <div class="flow-arrow">&rarr;</div>
         <div class="flow-box">
             <div class="flow-num">2</div>
-            <div class="flow-title">÷ Cost per project</div>
-            <div class="flow-desc">Weighted by project type mix</div>
+            <div class="flow-title">{_step2_title}</div>
+            <div class="flow-desc">{_step2_desc}</div>
         </div>
-        <div class="flow-arrow">→</div>
+        <div class="flow-arrow">&rarr;</div>
         <div class="flow-box">
             <div class="flow-num">3</div>
-            <div class="flow-title"># Projects / year</div>
-            <div class="flow-desc">How many fit in the budget</div>
+            <div class="flow-title">{_step3_title}</div>
+            <div class="flow-desc">{_step3_desc}</div>
         </div>
-        <div class="flow-arrow">→</div>
+        <div class="flow-arrow">&rarr;</div>
         <div class="flow-box">
             <div class="flow-num">4</div>
             <div class="flow-title">Pipeline stages</div>
             <div class="flow-desc">Projects flow through gates</div>
         </div>
-        <div class="flow-arrow">→</div>
+        <div class="flow-arrow">&rarr;</div>
         <div class="flow-box">
             <div class="flow-num">5</div>
             <div class="flow-title">Total FTE needed</div>
-            <div class="flow-desc">Active projects × staff each</div>
+            <div class="flow-desc">Active projects &times; staff each</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -790,7 +795,6 @@ def _page_results():
 
     if is_cashflow and yp:
         total_proj = sum(yp.values())
-        avg_proj = total_proj / max(len(yp), 1)
         yr_parts = [f"{yp.get(y, 0):,.0f}" for y in range(cfg.start_year, cfg.end_year + 1)]
         _proj_kpi_value = f"{total_proj:,.0f}"
         _proj_kpi_label = "Total new projects"
@@ -813,13 +817,17 @@ def _page_results():
         _kpi4_value = f"{result.steady_state_avg:,.0f}"
         _kpi4_sub = f"Average monthly headcount in the final year"
     else:
-        yr_parts = [f"{yp.get(y, 0):,.0f}" for y in range(cfg.start_year, cfg.end_year + 1)] if yp else []
         _proj_kpi_value = f"{yp.get(cfg.start_year, result.projects_per_year):,.0f}" if yp else f"{result.projects_per_year:,.0f}"
         _proj_kpi_label = "New projects per year"
-        if yr_parts:
-            _proj_kpi_sub = " → ".join(yr_parts) + " (shifts at Phase 2)" if has_phase2 else "Same count every year"
+        if has_phase2 and yp:
+            p1_val = yp.get(cfg.start_year, 0)
+            p2_val = yp.get(cfg.phase2_start_year, 0)
+            _proj_kpi_sub = (
+                f"{p1_val:,.0f}/yr in {cfg.start_year}\u2013{cfg.phase2_start_year - 1}, "
+                f"{p2_val:,.0f}/yr from {cfg.phase2_start_year} (allocation shift)"
+            )
         else:
-            _proj_kpi_sub = "How many the budget can support annually"
+            _proj_kpi_sub = "Same count every year"
 
         _kpi3_label = f"FTE range in {cfg.end_year}"
         _kpi3_value = f"{result.steady_state_min_month:,.0f} \u2013 {result.steady_state_max_month:,.0f}"
@@ -982,8 +990,8 @@ You tell it how much money you have and what types of projects you run. It tells
         <p>What percentage of projects finishing one stage go on to the next. If conversion from TRL 1–4 to TRL 5–7 is 50%, half the early-stage completers move forward.</p>
     </div>
     <div class="hiw-concept">
-        <h6>Steady state</h6>
-        <p>In the first few years, headcount grows because new projects pile up faster than old ones finish. Eventually, starts and completions balance out and headcount levels off. That stable level is the <strong>steady state</strong> — the long-run staffing requirement your hiring plan should target.</p>
+        <h6>{"Budget oscillation" if is_cashflow else "Steady state"}</h6>
+        <p>{"Under cash-flow budgeting, a large intake year creates a cost wave that squeezes subsequent years, then budget frees up again. This produces <strong>oscillating</strong> project counts and FTE demand — there is no single stable level. Your hiring plan should target the <strong>peak</strong> or <strong>average</strong> across the cycle." if is_cashflow else "In the first few years, headcount grows because new projects pile up faster than old ones finish. Eventually, starts and completions balance out and headcount levels off. That stable level is the <strong>steady state</strong> — the long-run staffing requirement your hiring plan should target."}</p>
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -1385,7 +1393,6 @@ You tell it how much money you have and what types of projects you run. It tells
              "How": f"Min to max monthly FTE in {cfg.end_year}"},
         ]
         if is_cashflow:
-            all_ftes = [monthly["fte_total"].max()] if not monthly.empty else [0]
             peak_fte = monthly.groupby(monthly["month"].dt.to_period("M"))["fte_total"].sum().max() if not monthly.empty else 0
             derived_rows.append({
                 "Metric": "Peak monthly FTE (any month)",
@@ -1493,13 +1500,15 @@ def _generate_excel(cfg: ModelConfig, result) -> bytes:
     ws.merge_cells("B5:F5")
     ws["B5"] = "R&D Workforce Demand Planning"
     ws["B5"].font = sub_font
+    _mode_label = "Cash-flow" if cfg.budget_mode == "cashflow" else "Commitment"
     info = [
         ("B8", "Budget", f"{cfg.total_budget_m:,.0f} M total, {cfg.total_budget_m*(1-cfg.overhead_pct):,.0f} M net"),
-        ("B9", "Period", f"{cfg.start_year}–{cfg.end_year}"),
-        ("B10", "Archetypes", ", ".join(a.name for a in cfg.archetypes)),
-        ("B11", "Avg monthly FTE", f"{result.steady_state_avg:,.0f}"),
-        ("B12", "FTE range", f"{result.steady_state_min_month:,.0f} – {result.steady_state_max_month:,.0f}"),
-        ("B13", "Projects/year", _proj_kpi_value),
+        ("B9", "Budget model", _mode_label),
+        ("B10", "Period", f"{cfg.start_year}–{cfg.end_year}"),
+        ("B11", "Archetypes", ", ".join(a.name for a in cfg.archetypes)),
+        ("B12", "Avg monthly FTE", f"{result.steady_state_avg:,.0f}"),
+        ("B13", "FTE range", f"{result.steady_state_min_month:,.0f} – {result.steady_state_max_month:,.0f}"),
+        ("B14", "Projects/year", _proj_kpi_value),
     ]
     for ref, lbl, val in info:
         ws[ref] = lbl
@@ -1524,6 +1533,7 @@ def _generate_excel(cfg: ModelConfig, result) -> bytes:
             ("Total R&D budget", f"{cfg.total_budget_m:,.0f} M", True),
             ("Overhead", f"{cfg.overhead_pct*100:.0f}%", True),
             ("Net project budget", f"{cfg.total_budget_m*(1-cfg.overhead_pct):,.0f} M", False),
+            ("Budget model", _mode_label, True),
         ]),
         ("TIMELINE", [
             ("Start year", str(cfg.start_year), True),
