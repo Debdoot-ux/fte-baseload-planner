@@ -1,12 +1,10 @@
 """
 FTE Baseload Planning Tool — Streamlit UI
-Two-page flow: Configure assumptions → View results.
-Standard / Custom input modes. No sidebar.
+Multi-scenario flow: Configure one or more scenarios → View results → Compare.
 """
 
 import io
 import sys
-import copy
 from pathlib import Path
 
 import streamlit as st
@@ -21,22 +19,29 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import Archetype, ModelConfig, StageParams
 from defaults import default_baseline
 from model import run_model, _weighted_cost_per_project
+from scenario_engine import run_all, comparison_summary, generate_comparison_excel
 
 # ---------------------------------------------------------------------------
-# Palette
+# Palette  (McKinsey Design System)
 # ---------------------------------------------------------------------------
 MCK_NAVY = "#051C2C"
-MCK_BLUE = "#2251FF"
-MCK_TEAL = "#00A9F4"
-MCK_GREEN = "#00B140"
-MCK_GREY = "#7F8C8D"
-MCK_LIGHT = "#F5F6F7"
+MCK_BLUE = "#00A3E0"
+MCK_TEAL = "#0067A0"
+MCK_GREEN = "#2E7D32"
+MCK_GREY = "#63666A"
+MCK_LIGHT = "#F5F5F5"
 MCK_WHITE = "#FFFFFF"
-MCK_DARK = "#1A1A2E"
+MCK_DARK = "#333333"
+MCK_BORDER = "#E0E0E0"
 
 ARCH_COLORS = [
-    "#2251FF", "#00A9F4", "#00B140", "#F4A100", "#E74C3C",
-    "#8E44AD", "#1ABC9C", "#D35400", "#2C3E50", "#27AE60",
+    "#051C2C", "#00A3E0", "#0067A0", "#ED6C02", "#7B1FA2",
+    "#2E7D32", "#F9A825", "#C62828", "#0088c2", "#4CAF50",
+]
+
+SCENARIO_COLORS = [
+    "#051C2C", "#00A3E0", "#0067A0", "#ED6C02", "#7B1FA2",
+    "#2E7D32", "#F9A825", "#C62828", "#0088c2", "#4CAF50",
 ]
 
 
@@ -58,181 +63,219 @@ st.set_page_config(
 
 st.markdown(f"""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    /* ── Force light mode ── */
+    html, .stApp, .main, section[data-testid="stSidebar"] {{
+        color-scheme: light !important;
+        background-color: {MCK_WHITE} !important;
+        color: {MCK_DARK} !important;
+    }}
+    @media (prefers-color-scheme: dark) {{
+        html, .stApp, .main {{ color-scheme: light !important; background-color: {MCK_WHITE} !important; color: {MCK_DARK} !important; }}
+    }}
 
+    /* ── Base typography ── */
     :root {{ --primary-color: {MCK_NAVY}; }}
-
-    .stApp {{ font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif; }}
+    .stApp {{
+        font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+        -webkit-font-smoothing: antialiased;
+    }}
     .main .block-container {{ padding-top: 1.5rem; max-width: 1200px; }}
 
-    /* Hide Streamlit chrome: sidebar, status, deploy, menu */
+    /* ── Hide Streamlit chrome ── */
     [data-testid="collapsedControl"] {{ display: none; }}
     [data-testid="stStatusWidget"] {{ display: none; }}
     [data-testid="stToolbar"] {{ display: none; }}
     header[data-testid="stHeader"] {{ display: none; }}
 
-    /* Override Streamlit accent → navy */
-    .stTabs [data-baseweb="tab-highlight"] {{ background-color: {MCK_NAVY} !important; }}
-    .stTabs [data-baseweb="tab"] {{ color: {MCK_GREY}; }}
-    .stTabs [aria-selected="true"] {{ color: {MCK_NAVY} !important; }}
+    /* ── Tabs (general) ── */
+    .stTabs [data-baseweb="tab-highlight"] {{ background-color: {MCK_BLUE} !important; height: 3px !important; }}
+    .stTabs [data-baseweb="tab"] {{
+        color: {MCK_GREY}; transition: color 0.25s cubic-bezier(.4,0,.2,1);
+        font-size: 1rem; padding: 0.6rem 1.2rem;
+    }}
+    .stTabs [aria-selected="true"] {{ color: {MCK_NAVY} !important; font-weight: 700; }}
+    .stTabs [data-baseweb="tab-list"] {{ gap: 0.5rem; }}
+
+
+    /* ── Buttons ── */
     button[kind="primary"], .stDownloadButton button {{
-        background-color: {MCK_NAVY} !important; border-color: {MCK_NAVY} !important;
-        color: {MCK_WHITE} !important;
+        background: linear-gradient(135deg, #0a1628, #163042) !important;
+        border: none !important; color: {MCK_WHITE} !important;
+        border-radius: 12px !important; font-weight: 600 !important;
+        box-shadow: 0 2px 10px rgba(5,28,44,0.15) !important;
+        transition: all 0.25s cubic-bezier(.4,0,.2,1) !important;
     }}
-    button[kind="primary"] *, .stDownloadButton button * {{
-        color: {MCK_WHITE} !important;
+    button[kind="primary"]:hover, .stDownloadButton button:hover {{
+        background: linear-gradient(135deg, {MCK_BLUE}, #0085b8) !important;
+        box-shadow: 0 6px 20px rgba(0,163,224,0.25) !important;
+        transform: translateY(-1px) !important;
     }}
+    button[kind="primary"] *, .stDownloadButton button * {{ color: {MCK_WHITE} !important; }}
+
     .stSlider [data-baseweb="slider"] div[role="slider"] {{ background: {MCK_NAVY} !important; }}
-    a {{ color: {MCK_NAVY}; }}
+    a {{ color: {MCK_BLUE}; }}
 
+    /* ── Hero header (gradient banner) ── */
     .mck-header {{
-        background: {MCK_NAVY}; color: white;
-        padding: 1.6rem 2rem; border-radius: 8px; margin-bottom: 1.2rem;
+        background: linear-gradient(135deg, #0a1628 0%, #122240 55%, #163042 100%);
+        color: white; padding: 1.8rem 2rem; border-radius: 16px;
+        margin-bottom: 1.2rem; position: relative; overflow: hidden;
+        box-shadow: 0 8px 32px rgba(5,28,44,0.25);
     }}
-    .mck-header h1 {{ margin: 0; font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; }}
-    .mck-header p {{ margin: 0.3rem 0 0 0; font-size: 0.82rem; opacity: 0.7; }}
+    .mck-header::before {{
+        content: ''; position: absolute; inset: 0;
+        background: radial-gradient(ellipse at center, rgba(0,163,224,0.08) 0%, transparent 70%);
+        pointer-events: none;
+    }}
+    .mck-header h1 {{
+        margin: 0; font-size: 1.5rem; font-weight: 700;
+        letter-spacing: -0.5px; position: relative;
+    }}
+    .mck-header .accent-line {{
+        width: 60px; height: 3px; margin: 0.5rem 0;
+        background: linear-gradient(90deg, {MCK_BLUE}, rgba(0,163,224,0.3));
+        border-radius: 3px; position: relative;
+    }}
+    .mck-header p {{
+        margin: 0; font-size: 0.82rem; opacity: 0.7; position: relative;
+    }}
 
+    /* ── Config header ── */
+    .config-header {{
+        background: rgba(255,255,255,0.97); border: 1px solid rgba(5,28,44,0.08);
+        border-radius: 16px; padding: 1.2rem 1.6rem; margin-bottom: 0.5rem;
+        box-shadow: 0 4px 24px rgba(5,28,44,0.06);
+        position: relative; overflow: hidden;
+    }}
+    .config-header::before {{
+        content: ''; position: absolute; top: 0; left: 0; bottom: 0; width: 4px;
+        background: linear-gradient(180deg, {MCK_BLUE}, {MCK_NAVY});
+        border-radius: 4px 0 0 4px;
+    }}
+    .config-header h2 {{
+        margin: 0 0 0 0.5rem; font-size: 1.05rem; font-weight: 700;
+        color: {MCK_NAVY}; letter-spacing: -0.3px;
+    }}
+    .config-header p {{
+        margin: 0.25rem 0 0 0.5rem; font-size: 0.8rem; color: {MCK_GREY}; line-height: 1.5;
+    }}
+
+    /* ── KPI cards ── */
     .kpi-row {{ display: flex; gap: 1rem; margin-bottom: 1.5rem; }}
     .kpi-card {{
-        flex: 1; background: {MCK_WHITE}; border: 1px solid #E0E4E8;
-        border-radius: 8px; padding: 1.1rem 1.4rem; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+        flex: 1; background: rgba(255,255,255,0.97);
+        border: 1px solid rgba(5,28,44,0.08); border-radius: 16px;
+        padding: 1.2rem 1.4rem; box-shadow: 0 4px 24px rgba(5,28,44,0.06);
+        position: relative; overflow: hidden;
+    }}
+    .kpi-card::before {{
+        content: ''; position: absolute; top: 0; left: 0; bottom: 0; width: 4px;
+        background: linear-gradient(180deg, {MCK_NAVY}, #163042);
+        border-radius: 4px 0 0 4px;
     }}
     .kpi-card .kpi-label {{
-        font-size: 0.7rem; font-weight: 500; color: {MCK_GREY};
-        text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.3rem;
+        font-size: 10px; font-weight: 600; color: {MCK_GREY};
+        text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 0.35rem;
     }}
     .kpi-card .kpi-value {{ font-size: 1.5rem; font-weight: 700; color: {MCK_NAVY}; }}
-    .kpi-card .kpi-sub {{ font-size: 0.75rem; color: {MCK_GREY}; margin-top: 0.15rem; }}
+    .kpi-card .kpi-sub {{ font-size: 0.75rem; color: #737d8c; margin-top: 0.15rem; }}
 
+    /* ── Section cards ── */
     .card {{
-        background: transparent; border: none;
-        border-radius: 0; padding: 0 0 1rem 0; margin-bottom: 1rem;
+        background: rgba(255,255,255,0.97); border: 1px solid rgba(5,28,44,0.08);
+        border-radius: 16px; padding: 1.2rem 1.4rem 1rem 1.4rem; margin-bottom: 1rem;
+        box-shadow: 0 4px 24px rgba(5,28,44,0.06);
+        position: relative; overflow: hidden;
+    }}
+    .card::before {{
+        content: ''; position: absolute; top: 0; left: 0; bottom: 0; width: 4px;
+        background: linear-gradient(180deg, {MCK_NAVY}, #163042);
+        border-radius: 4px 0 0 4px;
     }}
     .card h5 {{
-        background: #EBF4FA; color: {MCK_NAVY}; font-size: 0.78rem; font-weight: 600;
-        text-transform: uppercase; letter-spacing: 0.03em;
-        margin: 0 0 1rem 0; padding: 0.65rem 1rem;
-        border-radius: 6px; border-bottom: none;
+        color: {MCK_NAVY}; font-size: 15px; font-weight: 700;
+        letter-spacing: -0.3px; line-height: 1.4;
+        margin: 0 0 0.6rem 0; padding: 0;
+        background: none; border-radius: 0; border-bottom: none;
+        text-transform: none;
+    }}
+    .card h5 .card-sub {{
+        font-size: 12px; font-weight: 400; color: #737d8c;
+        margin-left: 0.5rem; letter-spacing: 0;
     }}
 
     .help-text {{
-        font-size: 0.76rem; color: #6B7280; line-height: 1.45;
+        font-size: 13px; color: #737d8c; line-height: 1.5;
         margin-top: -0.2rem; margin-bottom: 0.7rem;
     }}
 
     .section-intro {{
-        font-size: 0.88rem; color: #4B5563; margin-bottom: 1rem; line-height: 1.6; max-width: 820px;
+        font-size: 14px; color: #4a5568; margin-bottom: 1rem; line-height: 1.6; max-width: 820px;
     }}
-
-    .context-block {{
-        font-size: 0.9rem; color: {MCK_DARK}; line-height: 1.7; max-width: 820px;
-    }}
-    .context-block h4 {{
-        color: {MCK_NAVY}; font-size: 1.05rem; font-weight: 600;
-        margin-top: 1.5rem; margin-bottom: 0.5rem;
-    }}
-    .context-block h5 {{
-        color: {MCK_BLUE}; font-size: 0.9rem; font-weight: 600;
-        margin-top: 1.2rem; margin-bottom: 0.3rem;
-    }}
-    .context-block ul {{ margin-left: 1.2rem; }}
-    .context-block li {{ margin-bottom: 0.3rem; }}
-    .context-block strong {{ color: {MCK_NAVY}; }}
 
     .big-btn {{
         display: flex; justify-content: center; margin-top: 1.5rem; margin-bottom: 1rem;
     }}
 
-    .stDataFrame table {{ font-size: 0.82rem; }}
+    /* ── Tables ── */
+    .stDataFrame table {{ font-size: 13px; }}
+    .stDataFrame thead tr {{ background-color: {MCK_NAVY} !important; color: white !important; }}
+    .stDataFrame thead th {{ font-weight: 600 !important; }}
 
-    /* ── Model flow diagram ── */
+    /* ── Flow diagram ── */
     .flow-row {{
         display: flex; align-items: center; justify-content: center;
-        gap: 0; margin: 1.2rem 0 1.5rem 0; flex-wrap: nowrap;
+        gap: 0; margin: 1rem 0 1.2rem 0; flex-wrap: nowrap;
     }}
     .flow-box {{
-        background: {MCK_WHITE}; border: 2px solid #E0E4E8; border-radius: 10px;
-        padding: 0.8rem 1rem; text-align: center; min-width: 120px; max-width: 170px;
-        flex-shrink: 0;
+        background: rgba(255,255,255,0.97); border: 1px solid rgba(5,28,44,0.08);
+        border-radius: 12px; padding: 0.9rem 1.1rem; text-align: center;
+        min-width: 135px; max-width: 190px; flex-shrink: 0;
+        box-shadow: 0 2px 10px rgba(5,28,44,0.05);
+        transition: all 0.25s cubic-bezier(.4,0,.2,1);
     }}
-    .flow-box.highlight {{
-        border-color: {MCK_NAVY}; background: #EBF4FA;
+    .flow-box:hover {{
+        box-shadow: 0 6px 20px rgba(5,28,44,0.1);
+        transform: translateY(-2px);
     }}
     .flow-box .flow-num {{
-        display: inline-block; background: {MCK_NAVY}; color: {MCK_WHITE};
-        font-size: 0.7rem; font-weight: 700; width: 20px; height: 20px;
-        line-height: 20px; border-radius: 50%; text-align: center; margin-bottom: 0.3rem;
+        display: inline-block;
+        background: linear-gradient(135deg, {MCK_NAVY}, #163042);
+        color: {MCK_WHITE}; font-size: 0.7rem; font-weight: 700;
+        width: 22px; height: 22px; line-height: 22px;
+        border-radius: 50%; text-align: center; margin-bottom: 0.3rem;
     }}
     .flow-box .flow-title {{
-        font-size: 0.78rem; font-weight: 600; color: {MCK_NAVY};
+        font-size: 0.82rem; font-weight: 700; color: {MCK_NAVY};
+        margin-bottom: 0.25rem; letter-spacing: -0.3px;
+    }}
+    .flow-box .flow-formula {{
+        font-size: 0.67rem; color: #737d8c; font-weight: 500;
+        font-family: 'Consolas', 'SF Mono', monospace;
         margin-bottom: 0.15rem;
     }}
     .flow-box .flow-desc {{
-        font-size: 0.68rem; color: {MCK_GREY}; line-height: 1.3;
+        font-size: 0.67rem; color: #737d8c; line-height: 1.35;
     }}
     .flow-arrow {{
-        font-size: 1.3rem; color: {MCK_NAVY}; padding: 0 0.3rem; flex-shrink: 0;
+        font-size: 1.4rem; color: {MCK_BLUE}; padding: 0 0.4rem; flex-shrink: 0;
+        font-weight: 600;
     }}
 
-    /* ── How-It-Works visual blocks ── */
-    .hiw-step {{
-        display: flex; gap: 1rem; align-items: flex-start;
-        margin-bottom: 1.5rem; padding: 1.2rem; background: {MCK_WHITE};
-        border: 1px solid #E0E4E8; border-radius: 10px;
-    }}
-    .hiw-step-num {{
-        background: {MCK_NAVY}; color: {MCK_WHITE};
-        font-size: 1rem; font-weight: 700; min-width: 36px; height: 36px;
-        line-height: 36px; border-radius: 50%; text-align: center; flex-shrink: 0;
-    }}
-    .hiw-step-body {{ flex: 1; }}
-    .hiw-step-body h5 {{
-        margin: 0 0 0.4rem 0; font-size: 0.95rem; font-weight: 600; color: {MCK_NAVY};
-        background: none; padding: 0; border-radius: 0; text-transform: none; letter-spacing: 0;
-    }}
-    .hiw-step-body p {{ margin: 0 0 0.4rem 0; font-size: 0.85rem; color: #374151; line-height: 1.55; }}
-    .hiw-step-body .hiw-formula {{
-        display: inline-block; background: #EBF4FA; padding: 0.35rem 0.7rem;
-        border-radius: 6px; font-family: 'Courier New', monospace;
-        font-size: 0.82rem; color: {MCK_NAVY}; font-weight: 600; margin: 0.3rem 0;
-    }}
-    .hiw-step-body ul {{ margin: 0.3rem 0 0 1.1rem; padding: 0; }}
-    .hiw-step-body li {{ font-size: 0.85rem; color: #374151; margin-bottom: 0.2rem; line-height: 1.5; }}
-
-    .hiw-concept-row {{
-        display: flex; gap: 1rem; margin: 1rem 0 1.5rem 0; flex-wrap: wrap;
-    }}
-    .hiw-concept {{
-        flex: 1; min-width: 170px; background: #EBF4FA; border-radius: 10px;
-        padding: 1rem 1.1rem; text-align: left;
-    }}
-    .hiw-concept h6 {{
-        margin: 0 0 0.3rem 0; font-size: 0.82rem; font-weight: 700;
-        color: {MCK_NAVY}; text-transform: uppercase; letter-spacing: 0.02em;
-    }}
-    .hiw-concept p {{
-        margin: 0; font-size: 0.8rem; color: #374151; line-height: 1.5;
+    /* ── Expanders ── */
+    .streamlit-expanderHeader {{
+        font-weight: 600 !important; color: {MCK_NAVY} !important;
+        background: {MCK_LIGHT} !important; border-radius: 12px !important;
     }}
 
-    .hiw-callout {{
-        background: #FFFBEB; border-left: 4px solid #F59E0B;
-        padding: 0.9rem 1.1rem; border-radius: 0 8px 8px 0;
-        margin: 1rem 0; font-size: 0.85rem; color: #92400E; line-height: 1.55;
+    /* ── Global transition ── */
+    @media (prefers-reduced-motion: no-preference) {{
+        button, .flow-box, .kpi-card {{
+            transition: all 0.25s cubic-bezier(.4,0,.2,1);
+        }}
     }}
-
-    .hiw-mini-pipe {{
-        display: flex; align-items: center; justify-content: flex-start;
-        gap: 0; margin: 0.8rem 0;
-    }}
-    .hiw-pipe-stage {{
-        background: {MCK_NAVY}; color: {MCK_WHITE}; padding: 0.5rem 0.9rem;
-        border-radius: 8px; font-size: 0.78rem; font-weight: 600; text-align: center;
-    }}
-    .hiw-pipe-arrow {{
-        font-size: 1rem; color: {MCK_NAVY}; padding: 0 0.4rem;
-    }}
-    .hiw-pipe-label {{
-        font-size: 0.68rem; color: {MCK_GREY}; text-align: center; margin-top: 0.2rem;
+    @media (prefers-reduced-motion: reduce) {{
+        *, *::before, *::after {{ transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }}
     }}
 </style>
 """, unsafe_allow_html=True)
@@ -241,557 +284,490 @@ st.markdown(f"""
 # ---------------------------------------------------------------------------
 # Session state
 # ---------------------------------------------------------------------------
-if "cfg" not in st.session_state or not hasattr(st.session_state.cfg, "pipeline_stages"):
-    st.session_state.cfg = default_baseline()
+if "scenarios" not in st.session_state:
+    st.session_state.scenarios = [{"name": "Scenario 1", "cfg": default_baseline()}]
 if "page" not in st.session_state:
     st.session_state.page = "configure"
+if "scenario_results" not in st.session_state:
+    st.session_state.scenario_results = []
+
+# Migrate old dict contingency_pct → single float
+for _scen in st.session_state.scenarios:
+    _cfg = _scen.get("cfg")
+    if _cfg and isinstance(_cfg.contingency_pct, dict):
+        _cfg.contingency_pct = max(_cfg.contingency_pct.values()) if _cfg.contingency_pct else 0.0
+
+
+def _clear_scenario_keys(from_idx: int):
+    """Remove cached widget keys for scenarios at or above *from_idx*
+    so that Streamlit picks up the real cfg values on re-render."""
+    import re
+    pattern = re.compile(r"^s(\d+)_")
+    to_delete = [k for k in st.session_state
+                 if (m := pattern.match(k)) and int(m.group(1)) >= from_idx]
+    for k in to_delete:
+        del st.session_state[k]
 
 
 def _sync_archetypes(cfg: ModelConfig):
-    """Ensure every archetype has entries for every pipeline stage."""
     for arch in cfg.archetypes:
+        # Collect the union of roles defined across this archetype's stages
+        arch_roles: set = set()
+        for sp in arch.stages.values():
+            arch_roles.update(sp.fte_per_role.keys())
+        if not arch_roles:
+            arch_roles = set(cfg.workforce_roles)
+
         for sname in cfg.pipeline_stages:
             if sname not in arch.stages:
-                arch.stages[sname] = StageParams(9, 8.0, 3.0, 2.0)
+                default_roles = {r: 1.0 for r in arch_roles}
+                arch.stages[sname] = StageParams(9, 8.0, 8.0, default_roles)
         extra = [k for k in arch.stages if k not in cfg.pipeline_stages]
         for k in extra:
             del arch.stages[k]
         ordered = {s: arch.stages[s] for s in cfg.pipeline_stages if s in arch.stages}
         arch.stages = ordered
+        # Ensure all stages within this archetype share the same role set
+        for sp in arch.stages.values():
+            for role in arch_roles:
+                if role not in sp.fte_per_role:
+                    sp.fte_per_role[role] = 0.0
 
 
 # ---------------------------------------------------------------------------
-# Header (both pages)
+# Header
 # ---------------------------------------------------------------------------
 def _render_header(subtitle: str):
     st.markdown(f"""
     <div class="mck-header">
         <h1>FTE Baseload Planning Tool</h1>
+        <div class="accent-line"></div>
         <p>{subtitle}</p>
     </div>
     """, unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PAGE 1: CONFIGURE
+# REUSABLE: Scenario config form
 # ═══════════════════════════════════════════════════════════════════════════
-def _page_configure():
-    cfg = st.session_state.cfg
+def _render_scenario_form(idx: int):
+    """Render the full configuration form for scenario at index *idx*."""
+    P = f"s{idx}_"
+    scen = st.session_state.scenarios[idx]
+    cfg = scen["cfg"]
 
-    _render_header("Set your R&amp;D budget and project portfolio &mdash; the model calculates how many staff you need")
+    # 1. Scenario name
+    new_name = st.text_input("Scenario name", value=scen["name"], key=f"{P}name")
+    scen["name"] = new_name
 
-    mode = st.radio(
-        "Input mode",
-        ["Quick estimate", "Full configuration"],
-        horizontal=True,
-        help="**Quick estimate** — set budget and portfolio mix; all other assumptions use baseline values (shown below). "
-             "**Full configuration** — define your own pipeline stages, project parameters, and staffing assumptions.",
-        key="input_mode",
-    )
-
-    is_custom = mode == "Full configuration"
-
-    # ── Visual: How the model works (compact flow) ──
-    _is_cf = cfg.budget_mode == "cashflow"
-    _step2_title = "− Ongoing costs" if _is_cf else "÷ Cost per project"
-    _step2_desc = "Deduct running project spend" if _is_cf else "Weighted by project type mix"
-    _step3_title = "# New projects" if _is_cf else "# Projects / year"
-    _step3_desc = "Varies year to year" if _is_cf else "How many fit in the budget"
-    st.markdown(f"""
-    <div class="flow-row">
-        <div class="flow-box">
-            <div class="flow-num">1</div>
-            <div class="flow-title">R&amp;D Budget</div>
-            <div class="flow-desc">Total spend minus overhead</div>
-        </div>
-        <div class="flow-arrow">&rarr;</div>
-        <div class="flow-box">
-            <div class="flow-num">2</div>
-            <div class="flow-title">{_step2_title}</div>
-            <div class="flow-desc">{_step2_desc}</div>
-        </div>
-        <div class="flow-arrow">&rarr;</div>
-        <div class="flow-box">
-            <div class="flow-num">3</div>
-            <div class="flow-title">{_step3_title}</div>
-            <div class="flow-desc">{_step3_desc}</div>
-        </div>
-        <div class="flow-arrow">&rarr;</div>
-        <div class="flow-box">
-            <div class="flow-num">4</div>
-            <div class="flow-title">Pipeline stages</div>
-            <div class="flow-desc">Projects flow through gates</div>
-        </div>
-        <div class="flow-arrow">&rarr;</div>
-        <div class="flow-box">
-            <div class="flow-num">5</div>
-            <div class="flow-title">Total FTE needed</div>
-            <div class="flow-desc">Active projects &times; staff each</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ── Row 1: Budget & Timeline | Pipeline (or baseline summary) ──
+    # 2. Budget & Timeline (left) | Project Stages (right) ────────────────
     col_left, col_right = st.columns(2)
 
     with col_left:
-        st.markdown('<div class="card"><h5>Budget & timeline</h5>', unsafe_allow_html=True)
-
+        st.markdown('<div class="card"><h5>Budget &amp; timeline <span class="card-sub">Annual spend, overhead, and funding model</span></h5>', unsafe_allow_html=True)
         cfg.total_budget_m = st.number_input(
-            "Annual R&D budget (MYR millions)", value=cfg.total_budget_m, min_value=1.0,
-            step=10.0, format="%.0f",
+            "Annual R&D budget (M)", value=cfg.total_budget_m, min_value=1.0,
+            step=10.0, format="%.0f", key=f"{P}budget",
             help="Total yearly R&D spend, before any deductions",
         )
-
         overhead_pct = st.slider(
-            "Overhead deduction (%)", 0, 60,
-            int(cfg.overhead_pct * 100), 5, "%d%%",
-            help="Admin, facilities, and management costs — subtracted from budget before funding projects",
+            "Overhead (%)", 0, 60,
+            int(cfg.overhead_pct * 100), 5, "%d%%", key=f"{P}overhead",
+            help="Admin, facilities, management — subtracted before funding projects",
         )
         cfg.overhead_pct = overhead_pct / 100.0
-
         avail = cfg.total_budget_m * (1 - cfg.overhead_pct)
-        st.markdown(f'<div class="help-text">Net project budget: <strong>{avail:,.0f} M</strong></div>', unsafe_allow_html=True)
-
-        c1, c2 = st.columns(2)
-        with c1:
-            cfg.start_year = int(st.number_input("First year of new projects", value=cfg.start_year, step=1,
-                                                  help="Year new project intake begins"))
-        with c2:
-            cfg.end_year = int(st.number_input("Last year of new projects", value=cfg.end_year, step=1,
-                                                help="Last year new projects are started — projects already in progress continue beyond this"))
-            if cfg.end_year <= cfg.start_year:
-                cfg.end_year = cfg.start_year + 1
-
+        st.markdown(
+            f'<div class="help-text">Net budget: <strong>{avail:,.0f} M</strong></div>',
+            unsafe_allow_html=True,
+        )
         _mode_options = ["Cash-flow", "Commitment"]
         _mode_map = {"Cash-flow": "cashflow", "Commitment": "commitment"}
         _mode_map_inv = {v: k for k, v in _mode_map.items()}
         _mode_sel = st.radio(
-            "Budget model",
-            _mode_options,
+            "Budget model", _mode_options,
             index=_mode_options.index(_mode_map_inv.get(cfg.budget_mode, "Cash-flow")),
-            horizontal=True,
+            horizontal=True, key=f"{P}bmode",
             help=(
                 "**Cash-flow**: annual budget covers ongoing project costs first; "
-                "only the remainder funds new starts (project counts vary year to year). "
+                "only the remainder funds new starts (project counts vary year to year).  \n\n"
                 "**Commitment**: each year's budget funds the full lifecycle cost of new "
                 "projects upfront (same count every year within a phase)."
             ),
         )
         cfg.budget_mode = _mode_map[_mode_sel]
 
+        yc1, yc2 = st.columns(2)
+        with yc1:
+            cfg.start_year = int(st.number_input(
+                "First year of new projects", value=cfg.start_year, step=1,
+                key=f"{P}start_yr", help="Year new project intake begins",
+            ))
+        with yc2:
+            cfg.end_year = int(st.number_input(
+                "Last year of new projects", value=cfg.end_year, step=1,
+                key=f"{P}end_yr",
+                help="Last year new projects are started — existing projects continue beyond this",
+            ))
+            if cfg.end_year <= cfg.start_year:
+                cfg.end_year = cfg.start_year + 1
         st.markdown('</div>', unsafe_allow_html=True)
 
     with col_right:
-        if is_custom:
-            st.markdown('<div class="card"><h5>Project stages — the journey every project takes</h5>', unsafe_allow_html=True)
-            st.markdown("""<div class="help-text">
-                Projects go through stages from early research to late development.
-                Define your stages below. <strong>"% start here"</strong> = of all new projects each year, what share enters at this stage?
-                <strong>"% move to next"</strong> = of projects that finish this stage, what share continues to the next one?
-            </div>""", unsafe_allow_html=True)
+        st.markdown('<div class="card"><h5>Project stages <span class="card-sub">Pipeline gates, entry splits &amp; advancement rates</span></h5>', unsafe_allow_html=True)
+        st.markdown("""<div class="help-text">
+            <strong>% start here</strong> = share of new projects that start at this stage.
+            <br><br>
+            <strong>% move to next</strong> = percentage of projects that finish this stage and advance to the next.
+        </div>""", unsafe_allow_html=True)
 
-            stages_to_remove = None
+        stages_to_remove = None
+        hc1, hc2, hc3, hc4 = st.columns([3, 2, 2, 1])
+        with hc1:
+            st.caption("Stage name")
+        with hc2:
+            st.caption("% start here")
+        with hc3:
+            st.caption("% move to next")
+        with hc4:
+            st.caption("")
 
-            hc1, hc2, hc3, hc4 = st.columns([3, 2, 2, 1])
-            with hc1:
-                st.caption("Stage name")
-            with hc2:
-                st.caption("% start here")
-            with hc3:
-                st.caption("% move to next")
-            with hc4:
-                st.caption("")
-
-            for si, sname in enumerate(cfg.pipeline_stages):
-                sc1, sc2, sc3, sc4 = st.columns([3, 2, 2, 1])
-                with sc1:
-                    new_name = st.text_input("Name", value=sname, key=f"sn_{si}",
-                                              label_visibility="collapsed")
-                with sc2:
-                    alloc = st.number_input(
-                        "Start", value=int(cfg.stage_mix.get(sname, 0) * 100),
-                        min_value=0, max_value=100, step=5, key=f"sa_{si}",
+        for si, sname in enumerate(cfg.pipeline_stages):
+            sc1, sc2, sc3, sc4 = st.columns([3, 2, 2, 1])
+            with sc1:
+                new_sname = st.text_input("Name", value=sname, key=f"{P}sn_{si}",
+                                          label_visibility="collapsed")
+            with sc2:
+                alloc = st.number_input(
+                    "Start", value=int(cfg.stage_mix.get(sname, 0) * 100),
+                    min_value=0, max_value=100, step=5, key=f"{P}sa_{si}",
+                    label_visibility="collapsed",
+                )
+            with sc3:
+                is_terminal = si == len(cfg.pipeline_stages) - 1
+                if not is_terminal:
+                    conv = st.number_input(
+                        "Move", value=int(cfg.stage_conversion_rates.get(sname, 0) * 100),
+                        min_value=0, max_value=100, step=5, key=f"{P}sc_{si}",
                         label_visibility="collapsed",
                     )
-                with sc3:
-                    is_terminal = si == len(cfg.pipeline_stages) - 1
-                    if not is_terminal:
-                        conv = st.number_input(
-                            "Move", value=int(cfg.stage_conversion_rates.get(sname, 0) * 100),
-                            min_value=0, max_value=100, step=5, key=f"sc_{si}",
-                            label_visibility="collapsed",
-                        )
-                    else:
-                        st.markdown("—")
-                        conv = None
-                with sc4:
-                    if len(cfg.pipeline_stages) > 1:
-                        if st.button("✕", key=f"sr_{si}"):
-                            stages_to_remove = si
-
-                if new_name != sname and new_name.strip():
-                    old = sname
-                    cfg.pipeline_stages[si] = new_name
-                    if old in cfg.stage_mix:
-                        cfg.stage_mix[new_name] = cfg.stage_mix.pop(old)
-                    if old in cfg.stage_conversion_rates:
-                        cfg.stage_conversion_rates[new_name] = cfg.stage_conversion_rates.pop(old)
-                    for arch in cfg.archetypes:
-                        if old in arch.stages:
-                            arch.stages[new_name] = arch.stages.pop(old)
-                    sname = new_name
-
-                cfg.stage_mix[sname] = alloc / 100.0
-                if conv is not None:
-                    cfg.stage_conversion_rates[sname] = conv / 100.0
-
-            if stages_to_remove is not None:
-                removed = cfg.pipeline_stages.pop(stages_to_remove)
-                cfg.stage_mix.pop(removed, None)
-                cfg.stage_conversion_rates.pop(removed, None)
-                for arch in cfg.archetypes:
-                    arch.stages.pop(removed, None)
-                st.rerun()
-
-            if st.button("＋ Add stage"):
-                new_s = f"Stage {len(cfg.pipeline_stages) + 1}"
-                cfg.pipeline_stages.append(new_s)
-                cfg.stage_mix[new_s] = 0.0
-                if len(cfg.pipeline_stages) >= 2:
-                    prev = cfg.pipeline_stages[-2]
-                    cfg.stage_conversion_rates.setdefault(prev, 0.50)
-                _sync_archetypes(cfg)
-                st.rerun()
-
-            alloc_sum = sum(cfg.stage_mix.get(s, 0) for s in cfg.pipeline_stages)
-            if abs(alloc_sum - 1.0) > 0.01:
-                st.warning(f"\"% start here\" values add up to {alloc_sum*100:.0f}% — they should total 100%")
-            else:
-                st.success("Stage percentages add up to 100%")
-
-            # Phase 2 toggle
-            st.divider()
-            p2_on = st.checkbox(
-                "Change TRL allocation in later years",
-                value=cfg.phase2_start_year > 0,
-                key="p2_toggle",
-                help="Enable to use a different \"% start here\" split from a chosen year onward. "
-                     "Conversion rates (% move to next) stay the same across both phases.",
-            )
-            if p2_on:
-                p2_year = int(st.number_input(
-                    "Shift allocation from year",
-                    value=max(cfg.phase2_start_year, cfg.start_year + 1),
-                    min_value=cfg.start_year + 1,
-                    max_value=cfg.end_year,
-                    step=1,
-                    key="p2_year",
-                ))
-                cfg.phase2_start_year = p2_year
-
-                p1c, p2c = st.columns(2)
-                with p1c:
-                    st.caption(f"Phase 1 — {cfg.start_year} to {p2_year - 1}")
-                    for si, sname in enumerate(cfg.pipeline_stages):
-                        st.markdown(f"**{sname}:** {cfg.stage_mix.get(sname, 0)*100:.0f}%")
-                with p2c:
-                    st.caption(f"Phase 2 — {p2_year} onward")
-                    for si, sname in enumerate(cfg.pipeline_stages):
-                        default_p2 = cfg.stage_mix_phase2.get(sname, cfg.stage_mix.get(sname, 0))
-                        p2_alloc = st.number_input(
-                            sname, value=int(default_p2 * 100),
-                            min_value=0, max_value=100, step=5,
-                            key=f"p2a_{si}", label_visibility="visible",
-                        )
-                        cfg.stage_mix_phase2[sname] = p2_alloc / 100.0
-
-                p1_parts = [f"{cfg.stage_mix.get(s,0)*100:.0f}%" for s in cfg.pipeline_stages]
-                p2_parts = [f"{cfg.stage_mix_phase2.get(s,0)*100:.0f}%" for s in cfg.pipeline_stages]
-                stage_labels = " / ".join(cfg.pipeline_stages)
-                st.info(
-                    f"**{cfg.start_year}–{p2_year - 1}:** {' / '.join(p1_parts)} ({stage_labels})  \n"
-                    f"**{p2_year} onward:** {' / '.join(p2_parts)} ({stage_labels})"
-                )
-
-                p2_sum = sum(cfg.stage_mix_phase2.get(s, 0) for s in cfg.pipeline_stages)
-                if abs(p2_sum - 1.0) > 0.01:
-                    st.warning(f"Phase 2 percentages add up to {p2_sum*100:.0f}% — should be 100%")
                 else:
-                    st.success("Phase 2 percentages add up to 100%")
+                    st.markdown("—")
+                    conv = None
+            with sc4:
+                if len(cfg.pipeline_stages) > 1:
+                    if st.button("✕", key=f"{P}sr_{si}"):
+                        stages_to_remove = si
 
-                st.caption("ℹ️ Conversion rates (% move to next) remain the same across both phases.")
-            else:
-                cfg.phase2_start_year = 0
-                cfg.stage_mix_phase2 = {}
+            if new_sname != sname and new_sname.strip():
+                old = sname
+                cfg.pipeline_stages[si] = new_sname
+                if old in cfg.stage_mix:
+                    cfg.stage_mix[new_sname] = cfg.stage_mix.pop(old)
+                if old in cfg.stage_conversion_rates:
+                    cfg.stage_conversion_rates[new_sname] = cfg.stage_conversion_rates.pop(old)
+                for arch in cfg.archetypes:
+                    if old in arch.stages:
+                        arch.stages[new_sname] = arch.stages.pop(old)
+                sname = new_sname
 
-            st.markdown('</div>', unsafe_allow_html=True)
+            cfg.stage_mix[sname] = alloc / 100.0
+            if conv is not None:
+                cfg.stage_conversion_rates[sname] = conv / 100.0
+
+        if stages_to_remove is not None:
+            removed = cfg.pipeline_stages.pop(stages_to_remove)
+            cfg.stage_mix.pop(removed, None)
+            cfg.stage_conversion_rates.pop(removed, None)
+            for arch in cfg.archetypes:
+                arch.stages.pop(removed, None)
+            st.rerun()
+
+        if st.button("＋ Add stage", key=f"{P}add_stage"):
+            new_s = f"Stage {len(cfg.pipeline_stages) + 1}"
+            cfg.pipeline_stages.append(new_s)
+            cfg.stage_mix[new_s] = 0.0
+            if len(cfg.pipeline_stages) >= 2:
+                prev = cfg.pipeline_stages[-2]
+                cfg.stage_conversion_rates.setdefault(prev, 0.50)
+            _sync_archetypes(cfg)
+            st.rerun()
+
+        alloc_sum = sum(cfg.stage_mix.get(s, 0) for s in cfg.pipeline_stages)
+        if abs(alloc_sum - 1.0) > 0.01:
+            st.warning(f"\"% start here\" total: {alloc_sum*100:.0f}% — should be 100%")
         else:
-            st.markdown('<div class="card"><h5>Project stages — the journey every project takes</h5>', unsafe_allow_html=True)
+            st.success("Stage percentages add up to 100%")
 
-            for si, sname in enumerate(cfg.pipeline_stages):
-                alloc = cfg.stage_mix.get(sname, 0) * 100
-                conv = cfg.stage_conversion_rates.get(sname, 0)
+        # Phase 2 toggle (inside right column, under stages)
+        p2_on = st.checkbox(
+            "Change stage allocation in later years",
+            value=cfg.phase2_start_year > 0, key=f"{P}p2_toggle",
+            help="Use a different \"% start here\" split from a chosen year onward.",
+        )
+        if p2_on:
+            p2_year = int(st.number_input(
+                "Shift allocation from year",
+                value=max(cfg.phase2_start_year, cfg.start_year + 1),
+                min_value=cfg.start_year + 1, max_value=cfg.end_year,
+                step=1, key=f"{P}p2_year",
+            ))
+            cfg.phase2_start_year = p2_year
+            p1c, p2c = st.columns(2)
+            with p1c:
+                st.caption(f"Phase 1 — {cfg.start_year} to {p2_year - 1}")
+                for si, sname in enumerate(cfg.pipeline_stages):
+                    st.markdown(f"**{sname}:** {cfg.stage_mix.get(sname, 0)*100:.0f}%")
+            with p2c:
+                st.caption(f"Phase 2 — {p2_year} onward")
+                for si, sname in enumerate(cfg.pipeline_stages):
+                    default_p2 = cfg.stage_mix_phase2.get(sname, cfg.stage_mix.get(sname, 0))
+                    p2_alloc = st.number_input(
+                        sname, value=int(default_p2 * 100),
+                        min_value=0, max_value=100, step=5,
+                        key=f"{P}p2a_{si}", label_visibility="visible",
+                    )
+                    cfg.stage_mix_phase2[sname] = p2_alloc / 100.0
+            p2_sum = sum(cfg.stage_mix_phase2.get(s, 0) for s in cfg.pipeline_stages)
+            if abs(p2_sum - 1.0) > 0.01:
+                st.warning(f"Phase 2 percentages add up to {p2_sum*100:.0f}% — should be 100%")
+            else:
+                st.success("Phase 2 percentages add up to 100%")
+        else:
+            cfg.phase2_start_year = 0
+            cfg.stage_mix_phase2 = {}
+        st.markdown('</div>', unsafe_allow_html=True)
 
-                line = f"**{sname}**  \n"
-                line += f"{alloc:.0f}% of new projects start at this stage each year"
-                if si < len(cfg.pipeline_stages) - 1 and conv > 0:
-                    next_name = cfg.pipeline_stages[si + 1]
-                    line += f"  \n{conv*100:.0f}% of projects that finish here move on to {next_name}"
-                elif si == len(cfg.pipeline_stages) - 1:
-                    line += "  \nThis is the final stage — projects end here"
-                st.markdown(line)
+    # 3. Project Type Details ─────────────────────────────────────────────
+    st.markdown(
+        '<div class="card"><h5>Project type details '
+        '<span class="card-sub">Portfolio mix &amp; per-type stage parameters</span></h5>',
+        unsafe_allow_html=True,
+    )
 
-            if cfg.phase2_start_year > 0 and cfg.stage_mix_phase2:
-                st.divider()
-                p1_parts = [f"{cfg.stage_mix.get(s,0)*100:.0f}%" for s in cfg.pipeline_stages]
-                p2_parts = [f"{cfg.stage_mix_phase2.get(s,0)*100:.0f}%" for s in cfg.pipeline_stages]
-                stage_labels = " / ".join(cfg.pipeline_stages)
-                st.info(
-                    f"**TRL allocation shifts from {cfg.phase2_start_year}**  \n"
-                    f"**{cfg.start_year}–{cfg.phase2_start_year - 1}:** {' / '.join(p1_parts)} ({stage_labels})  \n"
-                    f"**{cfg.phase2_start_year} onward:** {' / '.join(p2_parts)} ({stage_labels})  \n"
-                    f"_Conversion rates stay the same across both phases._"
-                )
-
-            st.divider()
-
-            st.markdown(
-                f"**New projects start during the first** {cfg.intake_spread_months} months of each year  \n"
-                f"**Staff utilization:** {cfg.utilization_rate*100:.0f}% of time on project work"
-                + (f"  \n**Ramp-up:** projects scale to full staffing over {cfg.ramp_months} months" if cfg.ramp_months > 0 else "")
-            )
-            st.caption("Switch to \"Full configuration\" to change these")
-            st.markdown('</div>', unsafe_allow_html=True)
-
-    # ── Row 2: Portfolio mix ──
-    st.markdown('<div class="card"><h5>Portfolio mix — what types of R&D projects do you run?</h5>', unsafe_allow_html=True)
-    st.markdown('<div class="help-text">Your R&D portfolio is a mix of different project types (e.g. chemistry, hardware, software). Use the sliders to set what percentage of your projects fall into each category. These must add up to 100%.</div>', unsafe_allow_html=True)
-
-    arch_cols = st.columns(max(len(cfg.archetypes), 1))
+    # Portfolio mix — name, share, remove ─────────────────────────────────
+    st.markdown(
+        '<div class="help-text">Share of new projects by type — must add up to 100%.</div>',
+        unsafe_allow_html=True,
+    )
+    arch_to_remove = None
     for ai, arch in enumerate(cfg.archetypes):
-        with arch_cols[ai % len(arch_cols)]:
-            share = st.slider(
-                arch.name, 0, 100,
-                int(arch.portfolio_share * 100), 5, "%d%%",
-                key=f"ps_{ai}",
+        nc, sc, xc = st.columns([3, 2, 0.5])
+        with nc:
+            new_name = st.text_input(
+                "Type name", value=arch.name, key=f"{P}an_{ai}",
+                label_visibility="collapsed",
+            )
+            arch.name = new_name
+        with sc:
+            share = st.number_input(
+                f"Share (%)", value=round(arch.portfolio_share * 100, 1),
+                min_value=0.0, max_value=100.0, step=1.0, format="%.1f",
+                key=f"{P}ps_{ai}", label_visibility="collapsed",
             )
             arch.portfolio_share = share / 100.0
+        with xc:
+            if len(cfg.archetypes) > 1:
+                if st.button("✕", key=f"{P}ra_{ai}"):
+                    arch_to_remove = ai
+    if arch_to_remove is not None:
+        cfg.archetypes.pop(arch_to_remove)
+        _clear_scenario_keys(idx)
+        st.rerun()
 
     total_share = sum(a.portfolio_share for a in cfg.archetypes)
     if abs(total_share - 1.0) > 0.01 and cfg.archetypes:
-        st.warning(f"Portfolio shares sum to {total_share*100:.0f}% — should be 100%")
+        st.warning(f"Shares sum to {total_share*100:.0f}% — should be 100%")
 
-    st.markdown('</div>', unsafe_allow_html=True)
+    if st.button("＋ Add project type", key=f"{P}add_arch"):
+        existing_roles = list(cfg.archetypes[0].stages.values())[0].fte_per_role.keys() \
+            if cfg.archetypes and cfg.archetypes[0].stages else cfg.workforce_roles
+        default_roles = {r: 1.0 for r in existing_roles}
+        new_stages = {s: StageParams(9, 8.0, 8.0, dict(default_roles))
+                      for s in cfg.pipeline_stages}
+        new_name = f"Type {len(cfg.archetypes) + 1}"
+        cfg.archetypes.append(Archetype(name=new_name, portfolio_share=0.0,
+                                        stages=new_stages))
+        st.rerun()
 
-    # ── Row 3 (Custom): Archetype details ──
-    if is_custom:
-        st.markdown('<div class="card"><h5>Project type details — how long, how much, how many people?</h5>', unsafe_allow_html=True)
-        st.markdown('<div class="help-text">For each project type and stage, set your best estimate for duration, cost, and team size.</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<hr style="border:none;border-top:1px solid rgba(5,28,44,0.08);'
+        'margin:0.6rem 0 0.8rem;">',
+        unsafe_allow_html=True,
+    )
 
-        _sync_archetypes(cfg)
-
-        arch_tabs = st.tabs([a.name for a in cfg.archetypes] + ["＋ Add"])
+    # Archetype tabs ──────────────────────────────────────────────────────
+    _sync_archetypes(cfg)
+    if cfg.archetypes:
+        arch_tabs = st.tabs([a.name for a in cfg.archetypes])
 
         for ai, arch in enumerate(cfg.archetypes):
             with arch_tabs[ai]:
-                arch.name = st.text_input("Name", value=arch.name, key=f"an_{ai}")
+                # Determine roles for this archetype
+                arch_roles = list(dict.fromkeys(
+                    role for sp in arch.stages.values()
+                    for role in sp.fte_per_role
+                ))
+                if not arch_roles:
+                    arch_roles = list(cfg.workforce_roles)
 
+                # Role management for this archetype ──────────────────────
+                role_to_remove = None
+                n_rl = max(len(arch_roles), 1)
+                rl_cols = st.columns(n_rl + 1)
+                for ri, role in enumerate(arch_roles):
+                    with rl_cols[ri]:
+                        new_rn = st.text_input(
+                            f"Role {ri+1}", value=role,
+                            key=f"{P}rn_{ai}_{ri}",
+                        )
+                        if new_rn != role and new_rn.strip():
+                            for sp in arch.stages.values():
+                                if role in sp.fte_per_role:
+                                    sp.fte_per_role[new_rn] = sp.fte_per_role.pop(role)
+                            _clear_scenario_keys(idx)
+                            st.rerun()
+                        if len(arch_roles) > 1:
+                            if st.button("✕", key=f"{P}rm_role_{ai}_{ri}"):
+                                role_to_remove = ri
+                with rl_cols[n_rl]:
+                    st.markdown("<div style='height:1.65rem'></div>",
+                                unsafe_allow_html=True)
+                    if st.button("＋ Add role", key=f"{P}add_role_{ai}"):
+                        n = len(arch_roles) + 1
+                        new_role = f"Role {n}"
+                        for sp in arch.stages.values():
+                            sp.fte_per_role[new_role] = 0.0
+                        _clear_scenario_keys(idx)
+                        st.rerun()
+                if role_to_remove is not None:
+                    removed = arch_roles[role_to_remove]
+                    for sp in arch.stages.values():
+                        sp.fte_per_role.pop(removed, None)
+                    _clear_scenario_keys(idx)
+                    st.rerun()
+
+                # Stage details ───────────────────────────────────────────
                 for sname in cfg.pipeline_stages:
                     if sname not in arch.stages:
                         continue
                     sp = arch.stages[sname]
                     st.markdown(f"**{sname}**")
 
-                    c1, c2, c3, c4 = st.columns(4)
-                    with c1:
+                    n_fixed_cols = 3
+                    n_role_cols = len(arch_roles)
+                    col_widths = [2] * n_fixed_cols + [2] * n_role_cols
+                    cols = st.columns(col_widths)
+
+                    with cols[0]:
                         sp.duration_months = st.number_input(
                             "Duration (months)", value=sp.duration_months,
-                            min_value=1, step=1, key=f"dm_{ai}_{sname}",
+                            min_value=1, step=1, key=f"{P}dm_{ai}_{sname}",
                         )
-                    with c2:
-                        sp.cost_millions = st.number_input(
-                            "Cost per project (M)", value=sp.cost_millions,
-                            min_value=0.1, step=0.5, key=f"cm_{ai}_{sname}",
+                    with cols[1]:
+                        sp.cost_min = st.number_input(
+                            "Cost min (M)", value=sp.cost_min,
+                            min_value=0.0, step=0.5, format="%.1f",
+                            key=f"{P}cmin_{ai}_{sname}",
+                            help="Minimum project cost for this stage",
                         )
-                    with c3:
-                        sp.fte_research = st.number_input(
-                            "Researchers per project", value=sp.fte_research,
-                            min_value=0.0, step=0.5, key=f"rm_{ai}_{sname}",
+                    with cols[2]:
+                        sp.cost_max = st.number_input(
+                            "Cost max (M)", value=sp.cost_max,
+                            min_value=0.0, step=0.5, format="%.1f",
+                            key=f"{P}cmax_{ai}_{sname}",
+                            help="Maximum project cost. Model uses midpoint as expected cost.",
                         )
-                    with c4:
-                        sp.fte_developer = st.number_input(
-                            "Developers per project", value=sp.fte_developer,
-                            min_value=0.0, step=0.5, key=f"ddm_{ai}_{sname}",
-                        )
+                        if sp.cost_max < sp.cost_min:
+                            sp.cost_max = sp.cost_min
 
-                if len(cfg.archetypes) > 1:
-                    if st.button(f"Remove {arch.name}", key=f"ra_{ai}"):
-                        cfg.archetypes.pop(ai)
-                        st.rerun()
+                    for rr, role in enumerate(arch_roles):
+                        with cols[n_fixed_cols + rr]:
+                            val = sp.fte_per_role.get(role, 0.0)
+                            new_val = st.number_input(
+                                f"{role} / project", value=val,
+                                min_value=0.0, step=0.5, format="%.1f",
+                                key=f"{P}fte_{ai}_{sname}_{rr}",
+                            )
+                            sp.fte_per_role[role] = new_val
 
-        with arch_tabs[-1]:
-            st.markdown("Click below to add a new archetype.")
-            if st.button("Create archetype"):
-                new_name = f"Type {len(cfg.archetypes) + 1}"
-                new_stages = {s: StageParams(9, 8.0, 3.0, 2.0)
-                              for s in cfg.pipeline_stages}
-                cfg.archetypes.append(Archetype(name=new_name, portfolio_share=0.0, stages=new_stages))
-                st.rerun()
-
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        # Advanced settings
-        st.markdown('<div class="card"><h5>Advanced settings</h5>', unsafe_allow_html=True)
-
-        ac1, ac2, ac3 = st.columns(3)
-        with ac1:
-            util_pct = st.slider(
-                "Utilization rate", 50, 100, int(cfg.utilization_rate * 100), 5, "%d%%",
-                help="Fraction of time an FTE spends on project work. If 80%, gross headcount = model FTE ÷ 0.80",
-            )
-            cfg.utilization_rate = util_pct / 100.0
-        with ac2:
-            cfg.ramp_months = st.slider(
-                "Ramp-up period (months)", 0, 6, cfg.ramp_months, 1,
-                help="Projects ramp FTE linearly. Month 1 of a 3-month ramp = 33% staffing, month 2 = 67%, month 3+ = 100%",
-            )
-        with ac3:
-            cfg.intake_spread_months = st.slider(
-                "Intake window (months/year)", 1, 12, cfg.intake_spread_months, 1,
-                help="New projects start evenly across the first N months of each year",
-            )
-
-        st.markdown('</div>', unsafe_allow_html=True)
-    else:
-        # Standard mode: show baseline archetype detail read-only
-        st.markdown('<div class="card"><h5>Project details — how long, how much, how many people? (baseline values)</h5>', unsafe_allow_html=True)
-
-        rows = []
-        for arch in cfg.archetypes:
-            for sname, sp in arch.stages.items():
-                rows.append({
-                    "Archetype": arch.name,
-                    "Stage": sname,
-                    "Duration": f"{sp.duration_months} mo",
-                    "Cost / project": f"{sp.cost_millions:.1f} M",
-                    "Research FTE": f"{sp.fte_research:.1f}",
-                    "Developer FTE": f"{sp.fte_developer:.1f}",
-                })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-        st.caption("Switch to \"Full configuration\" to change these")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    # ── Contingency buffer (both modes) ──
-    st.markdown('<div class="card"><h5>Contingency buffer — hiring headroom</h5>', unsafe_allow_html=True)
-    st.markdown('<div class="help-text">Optional buffer on top of the model\'s calculated FTE. '
-                'Accounts for uncertainty, attrition, leave, or estimation error. '
-                'Set separately for Research and Developer roles. '
-                'At 0% the adjusted numbers equal the base numbers.</div>', unsafe_allow_html=True)
-
-    cont_c1, cont_c2 = st.columns(2)
-    with cont_c1:
-        cont_res = st.slider(
-            "Research contingency", 0, 50,
-            int(cfg.contingency_pct_research * 100), 5, "%d%%",
-            key="cont_res",
-            help="Extra buffer on researcher headcount. E.g. 10% means 10% more researchers than the base model calculates.",
-        )
-        cfg.contingency_pct_research = cont_res / 100.0
-    with cont_c2:
-        cont_dev = st.slider(
-            "Developer contingency", 0, 50,
-            int(cfg.contingency_pct_developer * 100), 5, "%d%%",
-            key="cont_dev",
-            help="Extra buffer on developer headcount. E.g. 15% means 15% more developers than the base model calculates.",
-        )
-        cfg.contingency_pct_developer = cont_dev / 100.0
+                    if sp.cost_min != sp.cost_max:
+                        st.caption(f"Expected cost: {sp.cost_millions:.1f} M (midpoint)")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
-    with st.expander("Things the model assumes that cannot be changed"):
-        if cfg.budget_mode == "cashflow":
-            _budget_row = "| Cash-flow budgeting | The annual budget covers ongoing project costs first; only the remainder funds new starts |"
-            _budget_extra = "| Linear cost burn | Project cost is spread evenly across its duration (cost ÷ months) |"
-        else:
-            _budget_row = "| Commitment budgeting | Each year's budget funds the full lifecycle cost of new projects upfront |"
-            _budget_extra = "| Each year stands alone | Budget for year N is independent of ongoing costs from prior years |"
-        st.markdown(f"""
-| What the model assumes | In plain language |
-|------------------------|-------------------|
-| Monthly tracking | The model tracks projects and headcount month by month |
-{_budget_row}
-| Same team size throughout a project | Once a project starts, its team stays the same size (unless ramp-up is on) |
-| Graduates add to the next stage | Projects that finish an early stage and move on are *added* to whatever's already in the next stage |
-| No projects get cancelled midway | Once started, every project runs to the end of its stage |
-| No bulk discounts | Running 50 projects doesn't make each one cheaper than running 5 |
-| Same gross budget every year | The same annual budget envelope applies every year |
-{_budget_extra}
-| Two roles only | Researchers and Developers — no other role types |
-| Projects start evenly | New projects are spread evenly across the intake months (not all at once) |
-| One path through the pipeline | Projects go forward through stages in order — no skipping ahead or looping back |
-""")
-    # ── Generate button ──
-    c1, c2, c3 = st.columns([1, 2, 1])
-    with c2:
-        if st.button("▶  Generate Model", use_container_width=True, type="primary"):
-            st.session_state.page = "results"
-            st.rerun()
-
-    _, rc, _ = st.columns([1, 2, 1])
-    with rc:
-        if st.button("⟳  Reset to baseline defaults", use_container_width=True):
-            st.session_state.cfg = default_baseline()
-            st.rerun()
+    # 4. Advanced Settings ─────────────────────────────────────────────────
+    st.markdown(
+        '<div class="card"><h5>Advanced settings '
+        '<span class="card-sub">Utilization, ramp-up, intake &amp; contingency</span></h5>',
+        unsafe_allow_html=True,
+    )
+    ac1, ac2, ac3, ac4 = st.columns(4)
+    with ac1:
+        util_pct = st.slider(
+            "Utilization rate", 50, 100, int(cfg.utilization_rate * 100), 5, "%d%%",
+            key=f"{P}util",
+            help="Fraction of time an FTE spends on project work.",
+        )
+        cfg.utilization_rate = util_pct / 100.0
+    with ac2:
+        cfg.ramp_months = st.slider(
+            "Ramp-up period (months)", 0, 6, cfg.ramp_months, 1,
+            key=f"{P}ramp",
+            help="Projects ramp FTE linearly over this many months.",
+        )
+    with ac3:
+        cfg.intake_spread_months = st.slider(
+            "Intake window (months/year)", 1, 12, cfg.intake_spread_months, 1,
+            key=f"{P}intake",
+            help="New projects start evenly across the first N months of each year.",
+        )
+    with ac4:
+        cont_val = st.slider(
+            "Contingency buffer", 0, 50, int(cfg.contingency_pct * 100), 5, "%d%%",
+            key=f"{P}cont",
+            help="Extra headcount buffer applied on top of total FTE.",
+        )
+        cfg.contingency_pct = cont_val / 100.0
+    st.markdown('</div>', unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PAGE 2: RESULTS
+# REUSABLE: Single scenario results
 # ═══════════════════════════════════════════════════════════════════════════
-def _page_results():
-    cfg = st.session_state.cfg
-    result = run_model(cfg)
+def _render_single_result(name: str, cfg: ModelConfig, result, key_prefix: str = "r0"):
+    """Render the full results view for one scenario."""
+    P = f"{key_prefix}_"
+    cont = cfg.contingency_pct
+    has_contingency = cont > 0
+    is_cashflow = cfg.budget_mode == "cashflow"
+    has_phase2 = cfg.phase2_start_year > 0 and bool(cfg.stage_mix_phase2)
+    monthly = result.monthly
 
-    # Header with back button
-    hc1, hc2 = st.columns([3, 1])
-    with hc1:
-        _render_header(f"Results for {cfg.start_year}–{cfg.end_year} &nbsp;|&nbsp; Budget {cfg.total_budget_m:,.0f} M")
-    with hc2:
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("← Modify Assumptions", use_container_width=True):
-            st.session_state.page = "configure"
-            st.rerun()
+    has_cost_range = (
+        isinstance(result.cost_low_annual, pd.DataFrame)
+        and not result.cost_low_annual.empty
+    )
 
-    # Contingency helpers
-    cr = cfg.contingency_pct_research
-    cd = cfg.contingency_pct_developer
-    has_contingency = cr > 0 or cd > 0
-
-    # Compute adjusted steady-state from the last year's research/developer split
-    _ann = result.annual_summary
-    if not _ann.empty and has_contingency:
-        _last = _ann[_ann["Year"] == cfg.end_year]
-        if not _last.empty:
-            _lr = _last.iloc[0]["Avg Research FTE"]
-            _ld = _last.iloc[0]["Avg Developer FTE"]
-            adj_ss_avg = _lr * (1 + cr) + _ld * (1 + cd)
-        else:
-            adj_ss_avg = result.steady_state_avg
-    else:
-        adj_ss_avg = result.steady_state_avg
+    adj_ss_avg = result.steady_state_avg * (1 + cont) if has_contingency else result.steady_state_avg
 
     _cont_range_sub = ""
     _cont_ss_sub = ""
     if has_contingency:
-        adj_min = result.steady_state_min_month * (1 + max(cr, cd))
-        adj_max = result.steady_state_max_month * (1 + max(cr, cd))
+        adj_min = result.steady_state_min_month * (1 + cont)
+        adj_max = result.steady_state_max_month * (1 + cont)
         _cont_range_sub = f'<div class="kpi-sub"><strong>{adj_min:,.0f} – {adj_max:,.0f}</strong> with contingency</div>'
         _cont_ss_sub = f'<div class="kpi-sub"><strong>{adj_ss_avg:,.0f}</strong> with contingency</div>'
 
-    # Per-year project counts
-    has_phase2 = cfg.phase2_start_year > 0 and bool(cfg.stage_mix_phase2)
+    _cost_range_sub = ""
+    if has_cost_range:
+        _cost_range_sub = (
+            f'<div class="kpi-sub">Cost range: '
+            f'<strong>{result.cost_high_ss_avg:,.0f}</strong> (high cost) – '
+            f'<strong>{result.cost_low_ss_avg:,.0f}</strong> (low cost)</div>'
+        )
+
     yp = result.yearly_projects
-    is_cashflow = cfg.budget_mode == "cashflow"
 
     if is_cashflow and yp:
         total_proj = sum(yp.values())
@@ -812,30 +788,26 @@ def _page_results():
         _kpi3_label = "Peak monthly FTE"
         _kpi3_value = f"{_peak_fte:,.0f}"
         _kpi3_sub = f"Highest single-month FTE across all years (in {_peak_yr})"
-
         _kpi4_label = f"Avg FTE in {cfg.end_year}"
         _kpi4_value = f"{result.steady_state_avg:,.0f}"
-        _kpi4_sub = f"Average monthly headcount in the final year"
+        _kpi4_sub = "Average monthly headcount in the final year"
     else:
         _proj_kpi_value = f"{yp.get(cfg.start_year, result.projects_per_year):,.0f}" if yp else f"{result.projects_per_year:,.0f}"
         _proj_kpi_label = "New projects per year"
+        _proj_kpi_sub = "Same count every year"
         if has_phase2 and yp:
             p1_val = yp.get(cfg.start_year, 0)
             p2_val = yp.get(cfg.phase2_start_year, 0)
             _proj_kpi_sub = (
                 f"{p1_val:,.0f}/yr in {cfg.start_year}\u2013{cfg.phase2_start_year - 1}, "
-                f"{p2_val:,.0f}/yr from {cfg.phase2_start_year} (allocation shift)"
+                f"{p2_val:,.0f}/yr from {cfg.phase2_start_year}"
             )
-        else:
-            _proj_kpi_sub = "Same count every year"
-
         _kpi3_label = f"FTE range in {cfg.end_year}"
         _kpi3_value = f"{result.steady_state_min_month:,.0f} \u2013 {result.steady_state_max_month:,.0f}"
-        _kpi3_sub = f"Min to max monthly FTE \u2014 narrows as pipeline stabilizes"
-
+        _kpi3_sub = "Min to max monthly FTE"
         _kpi4_label = "Steady-state headcount"
         _kpi4_value = f"{result.steady_state_avg:,.0f}"
-        _kpi4_sub = f"Avg monthly FTE in {cfg.end_year} \u2014 the level the pipeline settles at"
+        _kpi4_sub = f"Avg monthly FTE in {cfg.end_year}"
 
     # KPI cards
     st.markdown(f"""<div class="kpi-row">
@@ -860,15 +832,14 @@ def _page_results():
 <div class="kpi-value">{_kpi4_value}</div>
 <div class="kpi-sub">{_kpi4_sub}</div>
 {_cont_ss_sub}
+{_cost_range_sub}
 </div>
 </div>""", unsafe_allow_html=True)
 
-    # Tabs
-    tab_dash, tab_how, tab_monthly, tab_annual, tab_assumptions = st.tabs([
-        "Dashboard", "How It Works", "Monthly Detail", "Annual Summary", "Assumption Register",
+    # Result tabs
+    tab_dash, tab_monthly, tab_annual, tab_assumptions = st.tabs([
+        "Dashboard", "Monthly Detail", "Annual Summary", "Assumption Register",
     ])
-
-    monthly = result.monthly
 
     # ── Dashboard ──
     with tab_dash:
@@ -876,8 +847,6 @@ def _page_results():
             st.info("No data. Check that archetypes and shares are configured.")
         else:
             st.markdown("#### Average headcount needed by year")
-            st.markdown('<div class="section-intro">Each bar shows the average monthly FTE for that year, with the range (min–max monthly FTE) shown as markers.</div>', unsafe_allow_html=True)
-
             ann = result.annual_summary
             if not ann.empty:
                 fig_main = go.Figure()
@@ -886,12 +855,29 @@ def _page_results():
                     marker_color=MCK_NAVY, opacity=0.85,
                 ))
                 if has_contingency:
-                    adj_avg_col = (ann["Avg Research FTE"] * (1 + cr)
-                                   + ann["Avg Developer FTE"] * (1 + cd))
                     fig_main.add_trace(go.Bar(
-                        x=ann["Year"], y=adj_avg_col, name="Avg FTE (with contingency)",
+                        x=ann["Year"],
+                        y=ann["Avg monthly FTE"] * (1 + cont),
+                        name="Avg FTE (with contingency)",
                         marker_color=MCK_NAVY, opacity=0.3,
                     ))
+                if has_cost_range:
+                    low_ann = result.cost_low_annual
+                    high_ann = result.cost_high_annual
+                    if not low_ann.empty:
+                        fig_main.add_trace(go.Scatter(
+                            x=low_ann["Year"], y=low_ann["Avg monthly FTE"],
+                            mode="lines+markers", name="Low cost scenario",
+                            line=dict(dash="dash", width=1.5, color=MCK_GREEN),
+                            marker=dict(size=5),
+                        ))
+                    if not high_ann.empty:
+                        fig_main.add_trace(go.Scatter(
+                            x=high_ann["Year"], y=high_ann["Avg monthly FTE"],
+                            mode="lines+markers", name="High cost scenario",
+                            line=dict(dash="dash", width=1.5, color="#C62828"),
+                            marker=dict(size=5),
+                        ))
                 fig_main.add_trace(go.Scatter(
                     x=ann["Year"], y=ann["Min monthly FTE"], name="Min month",
                     mode="markers", marker=dict(color=MCK_TEAL, size=8, symbol="triangle-down"),
@@ -904,319 +890,77 @@ def _page_results():
                     barmode="overlay" if has_contingency else "relative",
                     height=400,
                     margin=dict(l=20, r=20, t=30, b=20),
-                    plot_bgcolor=MCK_WHITE, paper_bgcolor=MCK_WHITE,
-                    font=dict(family="Inter", size=12, color=MCK_DARK),
+                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                    font=dict(family="Segoe UI, Helvetica Neue, Arial, sans-serif", size=12, color=MCK_DARK),
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-                    xaxis=dict(gridcolor="#E8EAED", title="", dtick=1),
-                    yaxis=dict(gridcolor="#E8EAED", title="Monthly FTE"),
+                    xaxis=dict(gridcolor="#E0E0E0", title="", dtick=1),
+                    yaxis=dict(gridcolor="#E0E0E0", title="Monthly FTE"),
                     hovermode="x unified",
                 )
-                st.plotly_chart(fig_main, use_container_width=True)
+                st.plotly_chart(fig_main, width="stretch", key=f"{P}chart_main")
 
-            st.markdown("#### Researcher vs Developer split by year")
-
+            st.markdown("#### Workforce split by year")
             if not ann.empty:
                 fig2 = go.Figure()
-                fig2.add_trace(go.Bar(x=ann["Year"], y=ann["Avg Research FTE"], name="Research", marker_color=MCK_BLUE))
-                fig2.add_trace(go.Bar(x=ann["Year"], y=ann["Avg Developer FTE"], name="Developer", marker_color=MCK_TEAL))
-                if has_contingency:
-                    res_buffer = ann["Avg Research FTE"] * cr
-                    dev_buffer = ann["Avg Developer FTE"] * cd
-                    fig2.add_trace(go.Bar(x=ann["Year"], y=res_buffer, name="Research contingency",
-                                          marker_color=MCK_BLUE, opacity=0.3))
-                    fig2.add_trace(go.Bar(x=ann["Year"], y=dev_buffer, name="Developer contingency",
-                                          marker_color=MCK_TEAL, opacity=0.3))
+                for ri, role in enumerate(cfg.all_roles):
+                    col = f"Avg {role} FTE"
+                    if col in ann.columns:
+                        color = ARCH_COLORS[ri % len(ARCH_COLORS)]
+                        fig2.add_trace(go.Bar(
+                            x=ann["Year"], y=ann[col], name=role, marker_color=color,
+                        ))
+                        if has_contingency:
+                            fig2.add_trace(go.Bar(
+                                x=ann["Year"], y=ann[col] * cont,
+                                name=f"{role} contingency",
+                                marker_color=color, opacity=0.3,
+                            ))
                 fig2.update_layout(
                     barmode="stack", height=360,
                     margin=dict(l=20, r=20, t=30, b=20),
-                    plot_bgcolor=MCK_WHITE, paper_bgcolor=MCK_WHITE,
-                    font=dict(family="Inter", size=12, color=MCK_DARK),
+                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                    font=dict(family="Segoe UI, Helvetica Neue, Arial, sans-serif", size=12, color=MCK_DARK),
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-                    xaxis=dict(gridcolor="#E8EAED", title="", dtick=1),
-                    yaxis=dict(gridcolor="#E8EAED", title="Avg monthly FTE"),
+                    xaxis=dict(gridcolor="#E0E0E0", title="", dtick=1),
+                    yaxis=dict(gridcolor="#E0E0E0", title="Avg monthly FTE"),
                     hovermode="x unified",
                 )
-                st.plotly_chart(fig2, use_container_width=True)
-
-            st.markdown("#### Project type detail")
-            bk_rows = []
-            for arch in cfg.archetypes:
-                for sn, sp in arch.stages.items():
-                    bk_rows.append({
-                        "Archetype": arch.name, "Stage": sn,
-                        "Share": f"{arch.portfolio_share*100:.0f}%",
-                        "Duration": f"{sp.duration_months} mo",
-                        "Cost / project": f"{sp.cost_millions:.1f} M",
-                        "Research FTE": f"{sp.fte_research:.1f}",
-                        "Developer FTE": f"{sp.fte_developer:.1f}",
-                    })
-            st.dataframe(pd.DataFrame(bk_rows), use_container_width=True, hide_index=True)
-
-    # ── How It Works ──
-    with tab_how:
-        st.markdown("""
-<div class="context-block">
-<h4>What does this tool do?</h4>
-<p style="font-size:1rem; line-height:1.7;">
-It answers one question: <strong>"Given our R&D budget, how many people do we need to hire?"</strong><br>
-You tell it how much money you have and what types of projects you run. It tells you how many researchers and developers you need on staff.
-</p>
-</div>
-""", unsafe_allow_html=True)
-
-        st.markdown("#### Before we start — a few key terms")
-        st.markdown(f"""
-<div class="hiw-concept-row">
-    <div class="hiw-concept">
-        <h6>FTE</h6>
-        <p><strong>Full-Time Equivalent.</strong> One FTE = one person working full time for a year. 0.5 FTE = half a person's time. This model calculates how many FTEs your projects need.</p>
-    </div>
-    <div class="hiw-concept">
-        <h6>TRL (Technology Readiness Level)</h6>
-        <p>A 1-to-9 scale used worldwide to describe how mature a technology is. Higher TRL = closer to real-world deployment.</p>
-    </div>
-    <div class="hiw-concept">
-        <h6>Pipeline</h6>
-        <p>The sequence of stages a project goes through from start to finish. Think of it like a funnel: many projects start at the early stage, but only some advance to later stages.</p>
-    </div>
-</div>
-<div class="hiw-concept-row">
-    <div class="hiw-concept">
-        <h6>Archetype</h6>
-        <p>A type of R&D project. Different types cost different amounts, take different times, and need different teams. E.g. "Chemistry" projects vs "Software" projects.</p>
-    </div>
-    <div class="hiw-concept">
-        <h6>Conversion rate</h6>
-        <p>What percentage of projects finishing one stage go on to the next. If conversion from TRL 1–4 to TRL 5–7 is 50%, half the early-stage completers move forward.</p>
-    </div>
-    <div class="hiw-concept">
-        <h6>{"Budget oscillation" if is_cashflow else "Steady state"}</h6>
-        <p>{"Under cash-flow budgeting, a large intake year creates a cost wave that squeezes subsequent years, then budget frees up again. This produces <strong>oscillating</strong> project counts and FTE demand — there is no single stable level. Your hiring plan should target the <strong>peak</strong> or <strong>average</strong> across the cycle." if is_cashflow else "In the first few years, headcount grows because new projects pile up faster than old ones finish. Eventually, starts and completions balance out and headcount levels off. That stable level is the <strong>steady state</strong> — the long-run staffing requirement your hiring plan should target."}</p>
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-        st.markdown("#### The pipeline — how projects flow")
-
-        pipe_text_parts = []
-        for si, sn in enumerate(cfg.pipeline_stages):
-            alloc = cfg.stage_mix.get(sn, 0) * 100
-            pipe_text_parts.append(f"**{sn}** ({alloc:.0f}% of new projects start here)")
-            if si < len(cfg.pipeline_stages) - 1:
-                conv = cfg.stage_conversion_rates.get(sn, 0) * 100
-                pipe_text_parts.append(f"  →  *{conv:.0f}% advance*  →  ")
-        st.markdown("".join(pipe_text_parts))
-
-        if has_phase2:
-            p1_summary = " / ".join(f"{cfg.stage_mix.get(sn,0)*100:.0f}%" for sn in cfg.pipeline_stages)
-            p2_summary = " / ".join(f"{cfg.stage_mix_phase2.get(sn,0)*100:.0f}%" for sn in cfg.pipeline_stages)
-            stage_labels = " / ".join(cfg.pipeline_stages)
-            st.info(
-                f"**Allocation shifts in {cfg.phase2_start_year}** ({stage_labels})  \n"
-                f"Phase 1: {p1_summary} · Phase 2: {p2_summary}  \n"
-                f"_Conversion rates (% move to next) stay the same._"
-            )
-
-        st.markdown("""
-<div class="context-block">
-<p>Projects enter the pipeline at different stages. Some start early (e.g. TRL 1–4) and must pass a gate to advance. Others skip the early stage and enter directly at a later stage (e.g. TRL 5–7). The model tracks how many projects are active in each stage, every month.</p>
-</div>
-""", unsafe_allow_html=True)
-
-        st.markdown("#### How the model calculates headcount — step by step")
-
-        _net = cfg.total_budget_m * (1 - cfg.overhead_pct)
-        st.markdown(f"""
-<div class="hiw-step">
-    <div class="hiw-step-num">1</div>
-    <div class="hiw-step-body">
-        <h5>Start with the money</h5>
-        <p>You have a total R&D budget. First, subtract overhead (admin, facilities, management). What's left is the money available to actually fund projects.</p>
-        <div class="hiw-formula">Net project budget = Total budget &times; (1 &minus; Overhead %)</div>
-        <p>Example: {cfg.total_budget_m:,.0f}M total &times; (1 &minus; {cfg.overhead_pct*100:.0f}%) = <strong>{_net:,.0f}M</strong> available for projects.</p>
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-        if is_cashflow:
-            st.markdown(f"""
-<div class="hiw-step">
-    <div class="hiw-step-num">2</div>
-    <div class="hiw-step-body">
-        <h5>Figure out how many projects you can afford (cash-flow budgeting)</h5>
-        <p>Under <strong>cash-flow budgeting</strong>, the {_net:,.0f}M annual budget must cover <em>everything running that year</em> &mdash; ongoing projects from prior years <strong>and</strong> new projects started this year.</p>
-        <p>The model works year by year:</p>
-        <ol>
-            <li><strong>Ongoing cost</strong> &mdash; for each project cohort still running from prior years, compute: <code>count &times; (cost &divide; duration) &times; months active this year</code>. Sum across all cohorts.</li>
-            <li><strong>Available budget</strong> = {_net:,.0f}M &minus; ongoing cost. If ongoing costs exceed the budget, no new projects can start that year.</li>
-            <li><strong>Partial-year cost per new project</strong> &mdash; a project started mid-year only consumes part of its lifetime cost this year. The model computes the average cost burned between the start month and December, weighted across all archetypes and stages.</li>
-            <li><strong>New projects</strong> = available budget &divide; partial-year cost.</li>
-        </ol>
-        <p>This means project counts <strong>vary year to year</strong>. A big intake year creates a cost wave that squeezes subsequent years. Once those projects complete, budget frees up for another wave.</p>
-    </div>
-</div>
-""", unsafe_allow_html=True)
-        else:
-            st.markdown(f"""
-<div class="hiw-step">
-    <div class="hiw-step-num">2</div>
-    <div class="hiw-step-body">
-        <h5>Figure out how many projects you can afford (commitment budgeting)</h5>
-        <p>Under <strong>commitment budgeting</strong>, each year's {_net:,.0f}M budget funds the <em>full lifecycle cost</em> of new projects upfront. Ongoing costs from prior years are not counted &mdash; each year stands alone.</p>
-        <div class="hiw-formula">Projects per year = Net budget &divide; Weighted avg lifecycle cost per project</div>
-        <p>The project count is the <strong>same every year</strong> within a phase (it only changes if the stage allocation shifts at Phase 2).</p>
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-        st.markdown(f"""
-<div class="hiw-step">
-    <div class="hiw-step-num">3</div>
-    <div class="hiw-step-body">
-        <h5>Distribute projects across types and stages</h5>
-        <p>The total project count is split across your project types (archetypes) based on portfolio shares. Within each type, projects are assigned to pipeline stages:</p>
-        <ul>
-            <li><strong>Direct allocation</strong> &mdash; a fixed percentage of new projects start directly at each stage</li>
-            <li><strong>Conversion</strong> &mdash; when early-stage projects finish, a percentage of them "graduate" to the next stage, creating additional projects there</li>
-        </ul>
-        <p>This means later stages get projects from two sources: direct allocation + graduates from the previous stage.</p>
-    </div>
-</div>
-
-<div class="hiw-step">
-    <div class="hiw-step-num">4</div>
-    <div class="hiw-step-body">
-        <h5>Simulate the pipeline month by month</h5>
-        <p>Each year's new projects are spread across the first few months (the "intake window"). Once a project starts, it stays active for its full duration. The model tracks how many projects are running in each stage, every single month.</p>
-        <p>Because projects from different years overlap (Year 1 projects may still be running when Year 2 projects start), headcount <strong>builds up</strong> over the first 2&ndash;3 years.</p>
-    </div>
-</div>
-
-<div class="hiw-step">
-    <div class="hiw-step-num">5</div>
-    <div class="hiw-step-body">
-        <h5>Convert active projects into people needed</h5>
-        <p>Every active project needs a team &mdash; some researchers and some developers. Multiply the number of active projects by the staff each project requires.</p>
-        <div class="hiw-formula">FTE in a month = Active projects &times; Staff per project</div>
-        <p>If utilization is less than 100% (people spend time on admin, training, leave), the model inflates the number to account for that. If ramp-up is set, new projects start with a partial team that grows to full strength over a few months.</p>
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-        if is_cashflow:
-            st.markdown(f"""
-#### Understanding the cash-flow FTE profile
-<div class="context-block">
-<p><strong>Why do project counts oscillate?</strong> In Year 1 the pipeline is empty, so the full {_net:,.0f}M goes to new projects &mdash; a large intake. In Year 2, those projects are still running and consuming budget, leaving little or no room for new starts. As older projects complete in Year 3, budget frees up again. This creates a "feast and famine" cycle.</p>
-
-<p><strong>What does that mean for headcount?</strong> FTE demand is driven by active projects, not new starts alone. Even when new starts drop to zero, ongoing projects still need staff. So headcount doesn't crash &mdash; it fluctuates within a range as waves of projects overlap.</p>
-
-<p><strong>Why is there a range within each year?</strong> Because new projects start during an intake window (not all at once), FTE demand varies month to month:</p>
-<ul>
-<li><strong>Peak monthly FTE</strong> &mdash; the busiest month across all years, when the most cohorts overlap</li>
-<li><strong>Avg FTE in {cfg.end_year}</strong> &mdash; the average headcount in the final year; use as a planning baseline</li>
-<li><strong>Min monthly FTE</strong> &mdash; the quietest month (e.g. just before a new cohort starts)</li>
-</ul>
-<p>Under cash-flow budgeting there is no true steady state within a 5-year window &mdash; use the final-year average as your planning target.</p>
-</div>
-""", unsafe_allow_html=True)
-        else:
-            st.markdown(f"""
-#### Understanding steady state and the yearly range
-<div class="context-block">
-<p><strong>Why does headcount grow at first?</strong> In Year 1, projects start but none have finished yet &mdash; the pipeline only fills up. In Year 2, new projects start while Year 1 projects are still running. Headcount keeps climbing until the rate of new starts roughly equals the rate of completions. Once that happens, headcount stabilizes &mdash; this is the <strong>steady state</strong>.</p>
-
-<p><strong>Why is there a range within each year?</strong> Because new projects start during an intake window (not all at once), FTE demand varies month to month:</p>
-<ul>
-<li><strong>Steady-state headcount</strong> &mdash; the average monthly FTE in the last intake year ({cfg.end_year}). This is the long-run staffing level your hiring plan should target.</li>
-<li><strong>Min monthly FTE</strong> &mdash; the quietest month (e.g. just before a new annual cohort starts)</li>
-<li><strong>Max monthly FTE</strong> &mdash; the busiest month (e.g. when old and new cohorts overlap most)</li>
-</ul>
-<p>Early years have a wide range (pipeline is still filling). Later years have a narrower range (pipeline has stabilized). When min and max converge, you've reached steady state.</p>
-</div>
-""", unsafe_allow_html=True)
-
-        st.markdown("#### What to do with the results")
-        if is_cashflow:
-            st.markdown("""
-<div class="context-block">
-<ul>
-<li><strong>Use the final-year average FTE</strong> as the planning baseline for long-term hiring</li>
-<li><strong>Use peak monthly FTE</strong> to size the maximum staffing capacity you need</li>
-<li><strong>Look at the year-by-year breakdown</strong> to understand when hiring surges and lulls will occur</li>
-<li><strong>Look at Research vs Developer split</strong> to decide which roles to prioritise</li>
-<li><strong>Test sensitivity</strong> — go back, change one assumption (e.g. budget, portfolio mix), and regenerate to see how it moves the needle</li>
-<li><strong>Download the Excel</strong> for offline review, presentations, or sharing with leadership</li>
-</ul>
-</div>
-""", unsafe_allow_html=True)
-        else:
-            st.markdown("""
-<div class="context-block">
-<ul>
-<li><strong>Use the steady-state headcount</strong> (the last KPI card) as the basis for long-term hiring plans — this is where the pipeline settles</li>
-<li><strong>Use the yearly range</strong> to plan for seasonal variation in staffing needs</li>
-<li><strong>Look at Research vs Developer split</strong> to decide which roles to prioritise</li>
-<li><strong>Test sensitivity</strong> — go back, change one assumption (e.g. budget, portfolio mix), and regenerate to see how it moves the needle</li>
-<li><strong>Download the Excel</strong> for offline review, presentations, or sharing with leadership</li>
-</ul>
-</div>
-""", unsafe_allow_html=True)
+                st.plotly_chart(fig2, width="stretch", key=f"{P}chart_split")
 
     # ── Monthly Detail ──
     with tab_monthly:
         if monthly.empty:
             st.info("No data.")
         else:
-            st.markdown("#### Month-by-month project load and FTE demand")
-            if is_cashflow:
-                st.markdown(
-                    '<div class="section-intro">'
-                    '<strong>Cash-flow budgeting:</strong> Project counts vary year to year because each '
-                    "year's budget must cover ongoing project costs before funding new starts. "
-                    'Months with zero new starts reflect years where the budget was fully consumed by '
-                    'ongoing projects. Each row shows one project type, one stage, one month.'
-                    '</div>',
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.markdown(
-                    '<div class="section-intro">'
-                    'Each row shows one project type, one stage, one month. '
-                    '"Effective projects" = number of active projects, adjusted for ramp-up if set.'
-                    '</div>',
-                    unsafe_allow_html=True,
-                )
-
             disp = monthly.copy()
             disp["Month"] = disp["month"].dt.strftime("%Y-%m")
             disp["Archetype"] = disp["archetype"]
             disp["Stage"] = disp["stage"]
             disp["Active Projects"] = disp["effective_projects"].round(1)
-            disp["Research FTE"] = disp["fte_research"].round(1)
-            disp["Developer FTE"] = disp["fte_developer"].round(1)
             disp["Total FTE"] = disp["fte_total"].round(1)
-
-            nice_cols = ["Month", "Archetype", "Stage",
-                         "Active Projects", "Research FTE", "Developer FTE", "Total FTE"]
+            nice_cols = ["Month", "Archetype", "Stage", "Active Projects"]
+            for role in cfg.all_roles:
+                col_src = f"fte_{role}"
+                col_nice = f"{role} FTE"
+                if col_src in disp.columns:
+                    disp[col_nice] = disp[col_src].round(1)
+                    nice_cols.append(col_nice)
+            nice_cols.append("Total FTE")
 
             if has_contingency:
-                disp["Adj Research FTE"] = (disp["fte_research"] * (1 + cr)).round(1)
-                disp["Adj Developer FTE"] = (disp["fte_developer"] * (1 + cd)).round(1)
-                disp["Adj Total FTE"] = (disp["Adj Research FTE"] + disp["Adj Developer FTE"]).round(1)
-                nice_cols += ["Adj Research FTE", "Adj Developer FTE", "Adj Total FTE"]
+                disp["Adj Total FTE"] = (disp["fte_total"] * (1 + cont)).round(1)
+                nice_cols.append("Adj Total FTE")
 
-            # Filters
             fc1, fc2, fc3 = st.columns(3)
             with fc1:
                 arch_options = sorted(disp["Archetype"].unique())
-                sel_arch = st.multiselect("Archetype", arch_options, default=arch_options, key="f_arch")
+                sel_arch = st.multiselect("Archetype", arch_options, default=arch_options, key=f"{P}f_arch")
             with fc2:
                 stage_options = sorted(disp["Stage"].unique())
-                sel_stage = st.multiselect("Stage", stage_options, default=stage_options, key="f_stage")
+                sel_stage = st.multiselect("Stage", stage_options, default=stage_options, key=f"{P}f_stage")
             with fc3:
                 year_options = sorted(y for y in disp["month"].dt.year.unique() if cfg.start_year <= y <= cfg.end_year)
-                sel_year = st.multiselect("Year", year_options, default=year_options, key="f_year")
+                sel_year = st.multiselect("Year", year_options, default=year_options, key=f"{P}f_year")
 
             filtered = disp[
                 disp["Archetype"].isin(sel_arch) &
@@ -1224,9 +968,9 @@ You tell it how much money you have and what types of projects you run. It tells
                 disp["month"].dt.year.isin(sel_year)
             ]
 
-            st.dataframe(filtered[nice_cols], use_container_width=True, hide_index=True, height=500)
+            st.dataframe(filtered[nice_cols], width="stretch", hide_index=True, height=500)
             st.download_button("Download CSV", filtered[nice_cols].to_csv(index=False),
-                               "fte_monthly.csv", "text/csv")
+                               f"fte_monthly_{name}.csv", "text/csv", key=f"{P}dl_monthly")
 
     # ── Annual Summary ──
     with tab_annual:
@@ -1234,205 +978,67 @@ You tell it how much money you have and what types of projects you run. It tells
             st.info("No data.")
         else:
             st.markdown("#### Average monthly FTE by year")
-            if is_cashflow:
-                st.markdown(
-                    '<div class="section-intro">'
-                    '<strong>Cash-flow budgeting:</strong> The annual budget covers all active projects '
-                    '(ongoing from prior years + new starts). Project counts vary year to year as ongoing '
-                    'costs fluctuate. This table shows the resulting FTE demand per year.'
-                    '</div>',
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.markdown(
-                    '<div class="section-intro">'
-                    'Avg = average across all months in the year. Min/Max = the lowest and highest '
-                    'single-month FTE that year (reflects pipeline build-up and seasonal intake variation).'
-                    '</div>',
-                    unsafe_allow_html=True,
-                )
-
             ann_disp = result.annual_summary.copy()
-
             _yp_for_ann = result.yearly_projects
-            ann_disp.insert(
-                1, "New projects",
-                ann_disp["Year"].map(lambda y: round(_yp_for_ann.get(y, 0), 1)),
-            )
+            ann_disp.insert(1, "New projects", ann_disp["Year"].map(lambda y: round(_yp_for_ann.get(y, 0), 1)))
 
             if has_contingency:
-                ann_disp["Adj Avg FTE"] = (
-                    ann_disp["Avg Research FTE"] * (1 + cr)
-                    + ann_disp["Avg Developer FTE"] * (1 + cd)
-                ).round(1)
-                ann_disp["Adj Min FTE"] = (ann_disp["Min monthly FTE"] * (1 + max(cr, cd))).round(1)
-                ann_disp["Adj Max FTE"] = (ann_disp["Max monthly FTE"] * (1 + max(cr, cd))).round(1)
+                ann_disp["Adj Avg FTE"] = (ann_disp["Avg monthly FTE"] * (1 + cont)).round(1)
 
-            st.dataframe(ann_disp, use_container_width=True, hide_index=True)
+            if has_cost_range:
+                low_ann = result.cost_low_annual
+                high_ann = result.cost_high_annual
+                if not low_ann.empty and "Avg monthly FTE" in low_ann.columns:
+                    ann_disp["FTE (low cost)"] = low_ann["Avg monthly FTE"].values
+                if not high_ann.empty and "Avg monthly FTE" in high_ann.columns:
+                    ann_disp["FTE (high cost)"] = high_ann["Avg monthly FTE"].values
 
-            if is_cashflow:
-                st.caption(
-                    "Under cash-flow budgeting, project counts oscillate because each year's budget "
-                    "must first cover ongoing costs from prior cohorts before funding new starts."
-                )
-
+            st.dataframe(ann_disp, width="stretch", hide_index=True)
             st.download_button("Download CSV", ann_disp.to_csv(index=False),
-                               "fte_annual.csv", "text/csv")
+                               f"fte_annual_{name}.csv", "text/csv", key=f"{P}dl_annual")
 
     # ── Assumption Register ──
     with tab_assumptions:
         st.markdown("#### All assumptions used in this run")
-        st.markdown('<div class="section-intro">Every number in the model traces back to one of these inputs.</div>', unsafe_allow_html=True)
-
         _budget_mode_label = "Cash-flow" if is_cashflow else "Commitment"
-        _budget_mode_meaning = (
-            "Annual budget covers all active projects (ongoing + new)"
-            if is_cashflow
-            else "Annual budget funds full lifecycle cost of new projects upfront"
-        )
-        st.markdown('<div class="card"><h5>1. Budget</h5>', unsafe_allow_html=True)
+        st.markdown('<div class="card"><h5>Budget</h5>', unsafe_allow_html=True)
         st.dataframe(pd.DataFrame([
-            {"Assumption": "Budget model", "Value": _budget_mode_label, "Type": "Input", "Meaning": _budget_mode_meaning},
-            {"Assumption": "Total R&D budget", "Value": f"{cfg.total_budget_m:,.0f} M", "Type": "Input", "Meaning": "Gross annual R&D spend"},
-            {"Assumption": "Overhead", "Value": f"{cfg.overhead_pct*100:.0f}%", "Type": "Input", "Meaning": "Admin, facilities, management"},
-            {"Assumption": "Net project budget", "Value": f"{cfg.total_budget_m*(1-cfg.overhead_pct):,.0f} M", "Type": "Derived", "Meaning": "Total x (1 - Overhead)"},
-        ]), use_container_width=True, hide_index=True)
+            {"Assumption": "Budget model", "Value": _budget_mode_label},
+            {"Assumption": "Total R&D budget", "Value": f"{cfg.total_budget_m:,.0f} M"},
+            {"Assumption": "Overhead", "Value": f"{cfg.overhead_pct*100:.0f}%"},
+            {"Assumption": "Net project budget", "Value": f"{cfg.total_budget_m*(1-cfg.overhead_pct):,.0f} M"},
+        ]), width="stretch", hide_index=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
-        st.markdown('<div class="card"><h5>2. Timeline</h5>', unsafe_allow_html=True)
-        st.dataframe(pd.DataFrame([
-            {"Assumption": "Start year", "Value": str(cfg.start_year), "Type": "Input"},
-            {"Assumption": "End year", "Value": str(cfg.end_year), "Type": "Input"},
-            {"Assumption": "Intake window", "Value": f"{cfg.intake_spread_months} months", "Type": "Input"},
-        ]), use_container_width=True, hide_index=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        st.markdown('<div class="card"><h5>3. Pipeline & funnel</h5>', unsafe_allow_html=True)
+        st.markdown('<div class="card"><h5>Pipeline</h5>', unsafe_allow_html=True)
         pipe_rows = []
         for si, sn in enumerate(cfg.pipeline_stages):
-            row_data: dict[str, str] = {
+            pipe_rows.append({
                 "Stage": sn,
-                "Allocation" if not has_phase2 else f"Phase 1 ({cfg.start_year}–{cfg.phase2_start_year - 1})": f"{cfg.stage_mix.get(sn,0)*100:.0f}%",
-                "Conversion to next (all phases)": f"{cfg.stage_conversion_rates.get(sn,0)*100:.0f}%" if si < len(cfg.pipeline_stages) - 1 else "Terminal",
-            }
-            if has_phase2:
-                row_data[f"Phase 2 ({cfg.phase2_start_year}–{cfg.end_year})"] = f"{cfg.stage_mix_phase2.get(sn,0)*100:.0f}%"
-            pipe_rows.append(row_data)
-        st.dataframe(pd.DataFrame(pipe_rows), use_container_width=True, hide_index=True)
-        if has_phase2:
-            st.caption("Conversion rates (% move to next) stay the same across both phases — only the allocation (% start here) shifts.")
+                "Allocation": f"{cfg.stage_mix.get(sn,0)*100:.0f}%",
+                "Conversion to next": f"{cfg.stage_conversion_rates.get(sn,0)*100:.0f}%" if si < len(cfg.pipeline_stages) - 1 else "Terminal",
+            })
+        st.dataframe(pd.DataFrame(pipe_rows), width="stretch", hide_index=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
-        st.markdown('<div class="card"><h5>4. Advanced</h5>', unsafe_allow_html=True)
-        st.dataframe(pd.DataFrame([
-            {"Assumption": "Utilization rate", "Value": f"{cfg.utilization_rate*100:.0f}%", "Type": "Input",
-             "Meaning": f"Gross FTE = model FTE ÷ {cfg.utilization_rate:.2f}"},
-            {"Assumption": "Ramp-up period", "Value": f"{cfg.ramp_months} months", "Type": "Input",
-             "Meaning": "Linear ramp from 0 to full FTE" if cfg.ramp_months > 0 else "Full FTE from day 1"},
-        ]), use_container_width=True, hide_index=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        st.markdown('<div class="card"><h5>5. Contingency buffer</h5>', unsafe_allow_html=True)
-        st.dataframe(pd.DataFrame([
-            {"Assumption": "Research contingency", "Value": f"{cfg.contingency_pct_research*100:.0f}%", "Type": "Input",
-             "Meaning": "Adjusted Research FTE = Base × (1 + this %)"},
-            {"Assumption": "Developer contingency", "Value": f"{cfg.contingency_pct_developer*100:.0f}%", "Type": "Input",
-             "Meaning": "Adjusted Developer FTE = Base × (1 + this %)"},
-        ]), use_container_width=True, hide_index=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        st.markdown('<div class="card"><h5>6. Project type parameters</h5>', unsafe_allow_html=True)
+        st.markdown('<div class="card"><h5>Project type parameters</h5>', unsafe_allow_html=True)
         arch_rows = []
         for arch in cfg.archetypes:
             for sn, sp in arch.stages.items():
-                arch_rows.append({
+                row_data = {
                     "Archetype": arch.name, "Stage": sn,
                     "Share": f"{arch.portfolio_share*100:.0f}%",
                     "Duration (mo)": f"{sp.duration_months}",
-                    "Cost (M)": f"{sp.cost_millions:.1f}",
-                    "Research FTE": f"{sp.fte_research:.1f}",
-                    "Developer FTE": f"{sp.fte_developer:.1f}",
-                })
-        st.dataframe(pd.DataFrame(arch_rows), use_container_width=True, hide_index=True)
+                    "Cost Min (M)": f"{sp.cost_min:.1f}",
+                    "Cost Max (M)": f"{sp.cost_max:.1f}",
+                }
+                for role in sp.fte_per_role:
+                    row_data[f"{role} FTE"] = f"{sp.fte_per_role[role]:.1f}"
+                arch_rows.append(row_data)
+        st.dataframe(pd.DataFrame(arch_rows), width="stretch", hide_index=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
-        st.markdown('<div class="card"><h5>7. Derived outputs</h5>', unsafe_allow_html=True)
-        try:
-            wc = _weighted_cost_per_project(cfg)
-        except Exception:
-            wc = 0
-        derived_rows = [
-            {"Metric": "Weighted lifecycle cost per project",
-             "Value": f"{wc:,.1f} M",
-             "How": "Portfolio-weighted expected cost across all stages"},
-        ]
-        if is_cashflow:
-            _how_proj = "Annual budget minus ongoing project costs, then divided by partial-year cost of a new project"
-        else:
-            _how_proj = "Annual net budget divided by weighted full lifecycle cost per project"
-        yp = result.yearly_projects
-        for y in range(cfg.start_year, cfg.end_year + 1):
-            derived_rows.append({
-                "Metric": f"New projects in {y}",
-                "Value": f"{yp.get(y, 0):,.1f}",
-                "How": _how_proj,
-            })
-        if is_cashflow:
-            _total_new = sum(yp.get(y, 0) for y in range(cfg.start_year, cfg.end_year + 1))
-            derived_rows.append({
-                "Metric": "Total new projects (all years)",
-                "Value": f"{_total_new:,.1f}",
-                "How": "Sum of new project starts across all years",
-            })
-        derived_rows += [
-            {"Metric": f"Avg FTE in {cfg.end_year}",
-             "Value": f"{result.steady_state_avg:,.0f}",
-             "How": f"Average monthly total FTE in {cfg.end_year}"},
-            {"Metric": f"FTE range in {cfg.end_year}",
-             "Value": f"{result.steady_state_min_month:,.0f} - {result.steady_state_max_month:,.0f}",
-             "How": f"Min to max monthly FTE in {cfg.end_year}"},
-        ]
-        if is_cashflow:
-            peak_fte = monthly.groupby(monthly["month"].dt.to_period("M"))["fte_total"].sum().max() if not monthly.empty else 0
-            derived_rows.append({
-                "Metric": "Peak monthly FTE (any month)",
-                "Value": f"{peak_fte:,.0f}",
-                "How": "Highest single-month total FTE across all years",
-            })
-        st.dataframe(pd.DataFrame(derived_rows), use_container_width=True, hide_index=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        with st.expander("8. Structural assumptions (built into the model)"):
-            _structural = [
-                {"Assumption": "Monthly granularity", "Meaning": "Projects and FTE tracked monthly"},
-                {"Assumption": "Constant FTE per project", "Meaning": "Flat staffing for full duration (unless ramp set)"},
-                {"Assumption": "Additive conversion", "Meaning": "Stage survivors add to next-stage direct allocation"},
-            ]
-            if is_cashflow:
-                _structural.append(
-                    {"Assumption": "Cash-flow budget constraint",
-                     "Meaning": "Each year's budget must cover ongoing costs first; remainder funds new projects"}
-                )
-                _structural.append(
-                    {"Assumption": "Year-to-year carry-over",
-                     "Meaning": "Ongoing project costs from prior years reduce the budget available for new starts"}
-                )
-            else:
-                _structural.append(
-                    {"Assumption": "Independent annual cohorts",
-                     "Meaning": "No carry-over of costs between years; each year's budget funds new projects only"}
-                )
-            _structural += [
-                {"Assumption": "No mid-stage failure", "Meaning": "Projects run to completion once started"},
-                {"Assumption": "No economies of scale", "Meaning": "Cost per project is constant regardless of volume"},
-                {"Assumption": "Constant annual budget", "Meaning": "Same gross budget every year"},
-                {"Assumption": "Two FTE roles", "Meaning": "Research and Developer only"},
-                {"Assumption": "Uniform intake spread", "Meaning": "Even distribution across intake window"},
-                {"Assumption": "Linear pipeline", "Meaning": "No branching or looping between stages"},
-            ]
-            st.dataframe(pd.DataFrame(_structural), use_container_width=True, hide_index=True)
-
-    # ── Excel download ──
+    # ── Single-scenario Excel download ──
     st.divider()
     dc1, dc2, dc3 = st.columns([1, 2, 1])
     with dc2:
@@ -1440,14 +1046,205 @@ You tell it how much money you have and what types of projects you run. It tells
         st.download_button(
             "Download full model as Excel",
             data=excel_bytes,
-            file_name="FTE_Baseload_Model.xlsx",
+            file_name=f"FTE_Model_{name}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
+            width="stretch",
+            key=f"{P}dl_excel",
         )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Excel generator
+# COMPARE VIEW
+# ═══════════════════════════════════════════════════════════════════════════
+def _render_compare_view(results_list):
+    st.markdown("#### Scenario Comparison")
+
+    summary_df = comparison_summary(results_list)
+    st.dataframe(summary_df, width="stretch", hide_index=True)
+
+    # Overlay bar chart: avg FTE per year per scenario
+    st.markdown("#### Average FTE by Year — All Scenarios")
+
+    fig = go.Figure()
+    for i, (sname, cfg, res) in enumerate(results_list):
+        ann = res.annual_summary
+        if ann.empty:
+            continue
+        color = SCENARIO_COLORS[i % len(SCENARIO_COLORS)]
+        fig.add_trace(go.Bar(
+            x=ann["Year"], y=ann["Avg monthly FTE"],
+            name=sname, marker_color=color, opacity=0.85,
+        ))
+
+    fig.update_layout(
+        barmode="group", height=420,
+        margin=dict(l=20, r=20, t=30, b=20),
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Segoe UI, Helvetica Neue, Arial, sans-serif", size=12, color=MCK_DARK),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        xaxis=dict(gridcolor="#E0E0E0", title="", dtick=1),
+        yaxis=dict(gridcolor="#E0E0E0", title="Avg Monthly FTE"),
+        hovermode="x unified",
+    )
+    st.plotly_chart(fig, width="stretch", key="compare_chart")
+
+    # Download comparison Excel
+    st.divider()
+    dc1, dc2, dc3 = st.columns([1, 2, 1])
+    with dc2:
+        excel_bytes = generate_comparison_excel(results_list)
+        st.download_button(
+            "Download comparison as Excel",
+            data=excel_bytes,
+            file_name="FTE_Scenario_Comparison.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            width="stretch",
+            key="dl_compare_excel",
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PAGE 1: CONFIGURE
+# ═══════════════════════════════════════════════════════════════════════════
+def _page_configure():
+    _render_header(
+        "Set your R&amp;D budget and project portfolio "
+        "&mdash; the model calculates how many staff you need"
+    )
+
+    # ── Configuration sub-header ──
+    st.markdown("""
+    <div class="config-header">
+        <h2>Model Configuration</h2>
+        <p>Define your R&amp;D budget, project portfolio, and staffing assumptions below.
+        The model will calculate the workforce demand across your planning horizon.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Flow diagram (generic, shared across all scenarios) ──
+    st.markdown("""
+    <div class="flow-row">
+        <div class="flow-box">
+            <div class="flow-num">1</div>
+            <div class="flow-title">Net R&amp;D Budget</div>
+            <div class="flow-formula">Budget &minus; Overhead</div>
+            <div class="flow-desc">Funding available for projects</div>
+        </div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-box">
+            <div class="flow-num">2</div>
+            <div class="flow-title">New Projects / Year</div>
+            <div class="flow-desc">How many projects the budget can fund</div>
+        </div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-box">
+            <div class="flow-num">3</div>
+            <div class="flow-title">Pipeline Stages</div>
+            <div class="flow-desc">Projects enter at different stages; some advance through gates</div>
+        </div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-box">
+            <div class="flow-num">4</div>
+            <div class="flow-title">Active Projects</div>
+            <div class="flow-desc">Total projects running at any point, including carry-over</div>
+        </div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-box">
+            <div class="flow-num">5</div>
+            <div class="flow-title">FTE Demand</div>
+            <div class="flow-formula">Active Projects &times; Team Size</div>
+            <div class="flow-desc">Staff needed per workforce role</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Scenario tabs ──
+    scenario_names = [s["name"] for s in st.session_state.scenarios]
+    tab_labels = scenario_names + ["＋ Add Scenario"]
+    tabs = st.tabs(tab_labels)
+
+    for idx in range(len(st.session_state.scenarios)):
+        with tabs[idx]:
+            _render_scenario_form(idx)
+
+            if len(st.session_state.scenarios) > 1:
+                if st.button("Remove this scenario", key=f"remove_scen_{idx}"):
+                    st.session_state.scenarios.pop(idx)
+                    _clear_scenario_keys(idx)
+                    st.rerun()
+
+    with tabs[-1]:
+        st.markdown("Click below to add a new scenario.")
+        if st.button("Create new scenario", key="add_scenario"):
+            n = len(st.session_state.scenarios) + 1
+            st.session_state.scenarios.append({
+                "name": f"Scenario {n}",
+                "cfg": default_baseline(),
+            })
+            st.rerun()
+
+    # ── Generate button ──
+    st.divider()
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c2:
+        if st.button("▶  Generate Model", width="stretch", type="primary"):
+            configs = [(s["name"], s["cfg"]) for s in st.session_state.scenarios]
+            st.session_state.scenario_results = run_all(configs)
+            st.session_state.page = "results"
+            st.rerun()
+
+    _, rc, _ = st.columns([1, 2, 1])
+    with rc:
+        if st.button("⟳  Reset all to defaults", width="stretch"):
+            st.session_state.scenarios = [{"name": "Scenario 1", "cfg": default_baseline()}]
+            st.session_state.scenario_results = []
+            _clear_scenario_keys(0)
+            st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PAGE 2: RESULTS
+# ═══════════════════════════════════════════════════════════════════════════
+def _page_results():
+    results_list = st.session_state.scenario_results
+    if not results_list:
+        st.warning("No results. Please configure and generate first.")
+        if st.button("← Back to Configure"):
+            st.session_state.page = "configure"
+            st.rerun()
+        return
+
+    first_cfg = results_list[0][1]
+    _render_header(
+        f"Results for {first_cfg.start_year}–{first_cfg.end_year} "
+        f"&nbsp;|&nbsp; {len(results_list)} scenario(s)"
+    )
+
+    hc1, hc2 = st.columns([3, 1])
+    with hc2:
+        if st.button("← Modify Assumptions", width="stretch"):
+            st.session_state.page = "configure"
+            st.rerun()
+
+    # Build tab labels
+    has_multiple = len(results_list) > 1
+    tab_labels = [name for name, _, _ in results_list]
+    if has_multiple:
+        tab_labels.append("Compare All")
+
+    tabs = st.tabs(tab_labels)
+
+    for i, (sname, cfg, result) in enumerate(results_list):
+        with tabs[i]:
+            _render_single_result(sname, cfg, result, key_prefix=f"r{i}")
+
+    if has_multiple:
+        with tabs[-1]:
+            _render_compare_view(results_list)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Excel generator (single scenario — kept from original)
 # ═══════════════════════════════════════════════════════════════════════════
 def _generate_excel(cfg: ModelConfig, result) -> bytes:
     has_phase2 = cfg.phase2_start_year > 0 and bool(cfg.stage_mix_phase2)
@@ -1490,7 +1287,6 @@ def _generate_excel(cfg: ModelConfig, result) -> bytes:
             cell.alignment = Alignment(vertical="center")
             cell.border = bdr
 
-    # Cover
     ws = wb.active
     ws.title = "Cover"
     ws.sheet_properties.tabColor = "00A9F4"
@@ -1504,10 +1300,10 @@ def _generate_excel(cfg: ModelConfig, result) -> bytes:
     info = [
         ("B8", "Budget", f"{cfg.total_budget_m:,.0f} M total, {cfg.total_budget_m*(1-cfg.overhead_pct):,.0f} M net"),
         ("B9", "Budget model", _mode_label),
-        ("B10", "Period", f"{cfg.start_year}–{cfg.end_year}"),
+        ("B10", "Period", f"{cfg.start_year}\u2013{cfg.end_year}"),
         ("B11", "Archetypes", ", ".join(a.name for a in cfg.archetypes)),
         ("B12", "Avg monthly FTE", f"{result.steady_state_avg:,.0f}"),
-        ("B13", "FTE range", f"{result.steady_state_min_month:,.0f} – {result.steady_state_max_month:,.0f}"),
+        ("B13", "FTE range", f"{result.steady_state_min_month:,.0f} \u2013 {result.steady_state_max_month:,.0f}"),
         ("B14", "Projects/year", _proj_kpi_value),
     ]
     for ref, lbl, val in info:
@@ -1540,26 +1336,14 @@ def _generate_excel(cfg: ModelConfig, result) -> bytes:
             ("End year", str(cfg.end_year), True),
             ("Intake window", f"{cfg.intake_spread_months} months", True),
         ]),
-        (f"PIPELINE — Phase 1 ({cfg.start_year}–{cfg.phase2_start_year - 1})" if has_phase2 else "PIPELINE",
-         [(sn, f"{cfg.stage_mix.get(sn,0)*100:.0f}% alloc, "
-               f"{cfg.stage_conversion_rates.get(sn,0)*100:.0f}% conv"
-               if si < len(cfg.pipeline_stages)-1 else
-               f"{cfg.stage_mix.get(sn,0)*100:.0f}% alloc (terminal)", True)
-          for si, sn in enumerate(cfg.pipeline_stages)]),
-        *(
-            [(f"PIPELINE — Phase 2 ({cfg.phase2_start_year}–{cfg.end_year})",
-              [(sn, f"{cfg.stage_mix_phase2.get(sn,0)*100:.0f}% alloc", True)
-               for sn in cfg.pipeline_stages]
-              + [("Conversion rates", "Same as Phase 1 — unchanged", False)])]
-            if has_phase2 else []
-        ),
+        ("PIPELINE", [(sn, f"{cfg.stage_mix.get(sn,0)*100:.0f}% alloc, "
+              f"{cfg.stage_conversion_rates.get(sn,0)*100:.0f}% conv"
+              if si < len(cfg.pipeline_stages)-1 else
+              f"{cfg.stage_mix.get(sn,0)*100:.0f}% alloc (terminal)", True)
+         for si, sn in enumerate(cfg.pipeline_stages)]),
         ("ADVANCED", [
             ("Utilization", f"{cfg.utilization_rate*100:.0f}%", True),
             ("Ramp-up", f"{cfg.ramp_months} months", True),
-        ]),
-        ("CONTINGENCY", [
-            ("Research contingency", f"{cfg.contingency_pct_research*100:.0f}%", True),
-            ("Developer contingency", f"{cfg.contingency_pct_developer*100:.0f}%", True),
         ]),
     ]
     for sec_name, items in sections:
@@ -1581,9 +1365,13 @@ def _generate_excel(cfg: ModelConfig, result) -> bytes:
     ws_a[f"B{row}"] = "ARCHETYPE PARAMETERS"
     ws_a[f"B{row}"].font = sec_font
     row += 1
-    for ci, h in enumerate(["Archetype", "Stage", "Share", "Duration", "Cost", "Research", "Developer"], 2):
+    all_roles = cfg.all_roles
+    arch_hdrs = ["Archetype", "Stage", "Share", "Duration", "Cost Min", "Cost Max"]
+    arch_hdrs += [f"{r} FTE" for r in all_roles]
+    for ci, h in enumerate(arch_hdrs, 2):
         ws_a.cell(row=row, column=ci, value=h)
-    _hdr_row(ws_a, row, 8)
+    ncol_arch = len(arch_hdrs) + 1
+    _hdr_row(ws_a, row, ncol_arch)
     row += 1
     for arch in cfg.archetypes:
         for sn, sp in arch.stages.items():
@@ -1591,14 +1379,16 @@ def _generate_excel(cfg: ModelConfig, result) -> bytes:
             ws_a.cell(row=row, column=3, value=sn).font = body_font
             ws_a.cell(row=row, column=4, value=f"{arch.portfolio_share*100:.0f}%").font = blue_font
             ws_a.cell(row=row, column=5, value=f"{sp.duration_months} mo").font = blue_font
-            ws_a.cell(row=row, column=6, value=f"{sp.cost_millions:.1f} M").font = blue_font
-            ws_a.cell(row=row, column=7, value=f"{sp.fte_research:.1f}").font = blue_font
-            ws_a.cell(row=row, column=8, value=f"{sp.fte_developer:.1f}").font = blue_font
-            _data_row(ws_a, row, 8, alt=(row % 2 == 0))
+            ws_a.cell(row=row, column=6, value=f"{sp.cost_min:.1f} M").font = blue_font
+            ws_a.cell(row=row, column=7, value=f"{sp.cost_max:.1f} M").font = blue_font
+            for ri, role in enumerate(all_roles):
+                ws_a.cell(row=row, column=8 + ri,
+                          value=f"{sp.fte_per_role.get(role, 0):.1f}").font = blue_font
+            _data_row(ws_a, row, ncol_arch, alt=(row % 2 == 0))
             row += 1
 
-    for c_letter in ["A", "B", "C", "D", "E", "F", "G", "H"]:
-        ws_a.column_dimensions[c_letter].width = 20
+    for ci in range(1, ncol_arch + 1):
+        ws_a.column_dimensions[get_column_letter(ci)].width = 20
     ws_a.column_dimensions["A"].width = 3
 
     # Annual Summary
@@ -1607,16 +1397,6 @@ def _generate_excel(cfg: ModelConfig, result) -> bytes:
     ws_ann["B2"] = "Annual FTE Summary"
     ws_ann["B2"].font = title_font
     ann_df = result.annual_summary.copy()
-    _cr = cfg.contingency_pct_research
-    _cd = cfg.contingency_pct_developer
-    _has_cont = _cr > 0 or _cd > 0
-    if _has_cont and not ann_df.empty:
-        ann_df["Adj Avg FTE"] = (
-            ann_df["Avg Research FTE"] * (1 + _cr)
-            + ann_df["Avg Developer FTE"] * (1 + _cd)
-        ).round(1)
-        ann_df["Adj Min FTE"] = (ann_df["Min monthly FTE"] * (1 + max(_cr, _cd))).round(1)
-        ann_df["Adj Max FTE"] = (ann_df["Max monthly FTE"] * (1 + max(_cr, _cd))).round(1)
     if not ann_df.empty:
         row = 4
         cols = list(ann_df.columns)
@@ -1641,18 +1421,18 @@ def _generate_excel(cfg: ModelConfig, result) -> bytes:
     mon = result.monthly.copy()
     if not mon.empty:
         mon["month_str"] = mon["month"].dt.strftime("%Y-%m")
-        exp_cols = ["month_str", "archetype", "stage",
-                    "effective_projects", "fte_research", "fte_developer", "fte_total"]
-        nice = ["Month", "Archetype", "Stage", "Effective Projects",
-                "Research FTE", "Developer FTE", "Total FTE"]
-        for c in ["effective_projects", "fte_research", "fte_developer", "fte_total"]:
-            mon[c] = mon[c].round(2)
-        if _has_cont:
-            mon["adj_research"] = (mon["fte_research"] * (1 + _cr)).round(2)
-            mon["adj_developer"] = (mon["fte_developer"] * (1 + _cd)).round(2)
-            mon["adj_total"] = (mon["adj_research"] + mon["adj_developer"]).round(2)
-            exp_cols += ["adj_research", "adj_developer", "adj_total"]
-            nice += ["Adj Research FTE", "Adj Developer FTE", "Adj Total FTE"]
+        exp_cols = ["month_str", "archetype", "stage", "effective_projects"]
+        nice = ["Month", "Archetype", "Stage", "Effective Projects"]
+        for role in cfg.all_roles:
+            col = f"fte_{role}"
+            if col in mon.columns:
+                exp_cols.append(col)
+                nice.append(f"{role} FTE")
+        exp_cols.append("fte_total")
+        nice.append("Total FTE")
+        for c in exp_cols:
+            if c != "month_str" and c != "archetype" and c != "stage" and c in mon.columns:
+                mon[c] = mon[c].round(2)
         row = 4
         for ci, h in enumerate(nice, 2):
             ws_m.cell(row=row, column=ci, value=h)

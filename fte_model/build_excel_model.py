@@ -84,7 +84,7 @@ ARCHETYPES = [
         },
     },
     {
-        "name": "Algorithm (Software)",
+        "name": "Algorithm",
         "share": 0.20,
         "stages": {
             "TRL 1-4": {"dur": 9, "cost": 2.0, "res": 0.5, "dev": 0.5},
@@ -312,7 +312,7 @@ def build_inputs_sheet(wb):
         "Percentage of your projects that are Chemistry-type.\nEnter as a decimal: 0.20 = 20%.",
         "Percentage of your projects that are Hardware: Mechanical-type.\nEnter as a decimal: 0.30 = 30%.",
         "Percentage of your projects that are Hardware: Process-type.\nEnter as a decimal: 0.30 = 30%.",
-        "Percentage of your projects that are Algorithm (Software)-type.\nEnter as a decimal: 0.20 = 20%.",
+        "Percentage of your projects that are Algorithm-type.\nEnter as a decimal: 0.20 = 20%.",
     ]
     for ai, arch in enumerate(ARCHETYPES):
         ws.cell(row=row, column=2, value=f"{arch['name']} (%)").font = label_font

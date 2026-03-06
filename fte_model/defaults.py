@@ -10,15 +10,15 @@ def default_baseline() -> ModelConfig:
         stages={
             "TRL 1-4": StageParams(
                 duration_months=7,
-                cost_millions=4.0,
-                fte_research=3.5,
-                fte_developer=1.5,
+                cost_min=4.0,
+                cost_max=4.0,
+                fte_per_role={"Researcher": 3.5, "Developer": 1.5},
             ),
             "TRL 5-7": StageParams(
                 duration_months=21,
-                cost_millions=8.0,
-                fte_research=1.5,
-                fte_developer=3.5,
+                cost_min=8.0,
+                cost_max=8.0,
+                fte_per_role={"Researcher": 1.5, "Developer": 3.5},
             ),
         },
     )
@@ -29,15 +29,15 @@ def default_baseline() -> ModelConfig:
         stages={
             "TRL 1-4": StageParams(
                 duration_months=9,
-                cost_millions=5.0,
-                fte_research=3.5,
-                fte_developer=1.5,
+                cost_min=5.0,
+                cost_max=5.0,
+                fte_per_role={"Researcher": 3.5, "Developer": 1.5},
             ),
             "TRL 5-7": StageParams(
                 duration_months=21,
-                cost_millions=35.0,
-                fte_research=1.5,
-                fte_developer=3.5,
+                cost_min=35.0,
+                cost_max=35.0,
+                fte_per_role={"Researcher": 1.5, "Developer": 3.5},
             ),
         },
     )
@@ -48,34 +48,34 @@ def default_baseline() -> ModelConfig:
         stages={
             "TRL 1-4": StageParams(
                 duration_months=24,
-                cost_millions=15.0,
-                fte_research=6.5,
-                fte_developer=1.5,
+                cost_min=15.0,
+                cost_max=15.0,
+                fte_per_role={"Researcher": 6.5, "Developer": 1.5},
             ),
             "TRL 5-7": StageParams(
                 duration_months=75,
-                cost_millions=50.0,
-                fte_research=1.5,
-                fte_developer=6.5,
+                cost_min=50.0,
+                cost_max=50.0,
+                fte_per_role={"Researcher": 1.5, "Developer": 6.5},
             ),
         },
     )
 
-    software = Archetype(
-        name="Algorithm (Software)",
+    algorithm = Archetype(
+        name="Algorithm",
         portfolio_share=0.20,
         stages={
             "TRL 1-4": StageParams(
                 duration_months=9,
-                cost_millions=2.0,
-                fte_research=0.5,
-                fte_developer=0.5,
+                cost_min=2.0,
+                cost_max=2.0,
+                fte_per_role={"Researcher": 0.5, "Developer": 0.5},
             ),
             "TRL 5-7": StageParams(
                 duration_months=9,
-                cost_millions=5.0,
-                fte_research=0.5,
-                fte_developer=0.5,
+                cost_min=5.0,
+                cost_max=5.0,
+                fte_per_role={"Researcher": 0.5, "Developer": 0.5},
             ),
         },
     )
@@ -94,5 +94,6 @@ def default_baseline() -> ModelConfig:
         intake_spread_months=6,
         utilization_rate=1.0,
         ramp_months=0,
-        archetypes=[chemistry, hardware_mechanical, hardware_process, software],
+        workforce_roles=["Researcher", "Developer"],
+        archetypes=[chemistry, hardware_mechanical, hardware_process, algorithm],
     )

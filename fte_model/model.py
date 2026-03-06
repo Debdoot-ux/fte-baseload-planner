@@ -6,6 +6,7 @@ Annual summary shows within-year range (min/max monthly FTE).
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
@@ -146,11 +147,9 @@ def _partial_year_cost_per_new_project(
                 direct_cost = mix_val * burn * months_in_year
                 arch_cost += direct_cost / intake
 
-                # Within-year conversion: if this stage completes within the
-                # same year, converted projects also consume budget this year.
                 if si < len(stages) - 1:
                     conv = cfg.stage_conversion_rates.get(sname, 0.0)
-                    comp_month_in_year = m + sp.duration_months  # 0-indexed month of completion
+                    comp_month_in_year = m + sp.duration_months
                     if conv > 0 and comp_month_in_year < 12:
                         next_sname = stages[si + 1]
                         if next_sname in arch.stages:
@@ -165,11 +164,7 @@ def _partial_year_cost_per_new_project(
 
 
 def _compute_yearly_projects(cfg: ModelConfig) -> Dict[int, float]:
-    """Compute new project counts year-by-year under cash-flow budgeting.
-
-    Each year's budget must cover ongoing project costs first; only the
-    remainder funds new starts. Returns {year: new_project_count}.
-    """
+    """Compute new project counts year-by-year under cash-flow budgeting."""
     budget = _available_budget(cfg)
     stages = cfg.pipeline_stages
     intake = max(cfg.intake_spread_months, 1)
@@ -180,8 +175,6 @@ def _compute_yearly_projects(cfg: ModelConfig) -> Dict[int, float]:
     for y_off, year in enumerate(range(cfg.start_year, cfg.end_year + 1)):
         mix = _get_stage_mix(cfg, year)
 
-        # 1. Generate conversion cohorts from prior-year early-stage completions
-        #    that complete during this year.
         new_conv_cohorts: List[_Cohort] = []
         for coh in cohorts:
             if coh.stage_idx >= len(stages) - 1:
@@ -211,19 +204,16 @@ def _compute_yearly_projects(cfg: ModelConfig) -> Dict[int, float]:
                     ))
         cohorts.extend(new_conv_cohorts)
 
-        # 2. Ongoing cost = cost consumed this year by all existing cohorts
         ongoing_cost = 0.0
         for coh in cohorts:
             m_active = _months_active_in_year(coh, y_off)
             ongoing_cost += coh.count * coh.monthly_burn * m_active
 
-        # 3. Available budget and new project count
         available = max(0.0, budget - ongoing_cost)
         partial_cost = _partial_year_cost_per_new_project(cfg, year, y_off)
         n_new = available / partial_cost if partial_cost > 0 else 0.0
         yearly[year] = n_new
 
-        # 4. Record new direct-entry cohorts
         for ai, arch in enumerate(cfg.archetypes):
             for si, sname in enumerate(stages):
                 if sname not in arch.stages:
@@ -249,7 +239,6 @@ def _compute_yearly_projects(cfg: ModelConfig) -> Dict[int, float]:
                         arch_idx=ai,
                     ))
 
-        # 5. Within-year conversion cohorts from THIS year's new projects
         year_first = y_off * 12
         year_last = year_first + 11
         for ai, arch in enumerate(cfg.archetypes):
@@ -342,8 +331,8 @@ def _run_archetype(
 
         sp = arch.stages[sname]
         dur = sp.duration_months
-        fte_r = sp.fte_research
-        fte_d = sp.fte_developer
+        fte_roles = sp.fte_per_role
+        fte_total_per_project = sum(fte_roles.values())
 
         starts = pd.Series(0.0, index=idx)
 
@@ -379,16 +368,17 @@ def _run_archetype(
             n = active.loc[dt]
             if n < 1e-9:
                 continue
-            records.append({
+            record = {
                 "month": dt,
                 "year": dt.year,
                 "archetype": arch.name,
                 "stage": sname,
                 "effective_projects": n,
-                "fte_research": n * fte_r / utilization,
-                "fte_developer": n * fte_d / utilization,
-                "fte_total": n * (fte_r + fte_d) / utilization,
-            })
+                "fte_total": n * fte_total_per_project / utilization,
+            }
+            for role_name, fte_count in fte_roles.items():
+                record[f"fte_{role_name}"] = n * fte_count / utilization
+            records.append(record)
 
 
 # ---------------------------------------------------------------------------
@@ -396,11 +386,7 @@ def _run_archetype(
 # ---------------------------------------------------------------------------
 
 def _commitment_yearly_projects(cfg: ModelConfig) -> Dict[int, float]:
-    """Compute per-year project counts under the commitment model.
-
-    Each year's full budget goes toward new project commitments (lifecycle cost
-    paid upfront). The count varies only when the stage mix shifts at Phase 2.
-    """
+    """Compute per-year project counts under the commitment model."""
     yearly: Dict[int, float] = {}
     for year in range(cfg.start_year, cfg.end_year + 1):
         yearly[year] = _projects_for_year(cfg, year)
@@ -434,10 +420,9 @@ def run(cfg: ModelConfig) -> Dict:
 
     monthly = pd.DataFrame(records)
     if monthly.empty:
-        monthly = pd.DataFrame(
-            columns=["month", "year", "archetype", "stage",
-                      "effective_projects", "fte_research", "fte_developer", "fte_total"]
-        )
+        base_cols = ["month", "year", "archetype", "stage", "effective_projects", "fte_total"]
+        role_cols = [f"fte_{r}" for r in cfg.all_roles]
+        monthly = pd.DataFrame(columns=base_cols + role_cols)
 
     return {
         "monthly": monthly,
@@ -451,10 +436,9 @@ def run_model(cfg: ModelConfig) -> ModelResult:
     monthly = res["monthly"]
 
     annual = _build_annual_summary(monthly, cfg)
-
     ss_avg, ss_min, ss_max = _steady_state(monthly, cfg)
 
-    return ModelResult(
+    result = ModelResult(
         monthly=monthly,
         annual_summary=annual,
         steady_state_avg=ss_avg,
@@ -464,39 +448,79 @@ def run_model(cfg: ModelConfig) -> ModelResult:
         yearly_projects=res["yearly_projects"],
     )
 
+    # Cost sensitivity: run at low/high cost if any stage has a range
+    has_range = any(
+        abs(sp.cost_max - sp.cost_min) > 0.001
+        for arch in cfg.archetypes
+        for sp in arch.stages.values()
+    )
+    if has_range:
+        cfg_low = copy.deepcopy(cfg)
+        for arch in cfg_low.archetypes:
+            for sp in arch.stages.values():
+                sp.cost_max = sp.cost_min
+        res_low = run(cfg_low)
+        low_annual = _build_annual_summary(res_low["monthly"], cfg_low)
+        low_ss, _, _ = _steady_state(res_low["monthly"], cfg_low)
+
+        cfg_high = copy.deepcopy(cfg)
+        for arch in cfg_high.archetypes:
+            for sp in arch.stages.values():
+                sp.cost_min = sp.cost_max
+        res_high = run(cfg_high)
+        high_annual = _build_annual_summary(res_high["monthly"], cfg_high)
+        high_ss, _, _ = _steady_state(res_high["monthly"], cfg_high)
+
+        result.cost_low_ss_avg = low_ss
+        result.cost_high_ss_avg = high_ss
+        result.cost_low_annual = low_annual
+        result.cost_high_annual = high_annual
+
+    return result
+
 
 def _build_annual_summary(monthly, cfg):
     rows = []
     if monthly.empty:
         return pd.DataFrame(rows)
 
+    all_roles = cfg.all_roles
+    role_cols = [f"fte_{role}" for role in all_roles
+                 if f"fte_{role}" in monthly.columns]
+
     for yr in range(cfg.start_year, cfg.end_year + 1):
         yr_data = monthly[monthly["year"] == yr]
         if yr_data.empty:
-            rows.append({
+            row = {
                 "Year": yr,
                 "Avg monthly FTE": 0,
                 "Min monthly FTE": 0,
                 "Max monthly FTE": 0,
-                "Avg Research FTE": 0,
-                "Avg Developer FTE": 0,
-            })
+            }
+            for role in all_roles:
+                row[f"Avg {role} FTE"] = 0
+            rows.append(row)
             continue
 
-        monthly_totals = yr_data.groupby("month").agg(
-            total=("fte_total", "sum"),
-            research=("fte_research", "sum"),
-            developer=("fte_developer", "sum"),
-        )
+        agg_dict = {"total": ("fte_total", "sum")}
+        for rc in role_cols:
+            agg_dict[rc] = (rc, "sum")
 
-        rows.append({
+        monthly_totals = yr_data.groupby("month").agg(**agg_dict)
+
+        row = {
             "Year": yr,
             "Avg monthly FTE": round(monthly_totals["total"].mean(), 1),
             "Min monthly FTE": round(monthly_totals["total"].min(), 1),
             "Max monthly FTE": round(monthly_totals["total"].max(), 1),
-            "Avg Research FTE": round(monthly_totals["research"].mean(), 1),
-            "Avg Developer FTE": round(monthly_totals["developer"].mean(), 1),
-        })
+        }
+        for role in all_roles:
+            col = f"fte_{role}"
+            if col in monthly_totals.columns:
+                row[f"Avg {role} FTE"] = round(monthly_totals[col].mean(), 1)
+            else:
+                row[f"Avg {role} FTE"] = 0
+        rows.append(row)
 
     return pd.DataFrame(rows)
 

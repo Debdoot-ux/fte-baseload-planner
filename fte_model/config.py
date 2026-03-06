@@ -11,14 +11,19 @@ class StageParams:
     """Parameters for one archetype in one pipeline stage."""
 
     duration_months: int
-    cost_millions: float
-    fte_research: float
-    fte_developer: float
+    cost_min: float
+    cost_max: float
+    fte_per_role: Dict[str, float] = field(default_factory=dict)
+
+    @property
+    def cost_millions(self) -> float:
+        """Expected cost = midpoint of min/max range."""
+        return (self.cost_min + self.cost_max) / 2.0
 
 
 @dataclass
 class Archetype:
-    """A project archetype (e.g. Chemistry, Hardware, Software)."""
+    """A project archetype (e.g. Chemistry, Hardware, Algorithm)."""
 
     name: str
     portfolio_share: float
@@ -55,10 +60,25 @@ class ModelConfig:
     utilization_rate: float = 1.0
     ramp_months: int = 0
 
-    contingency_pct_research: float = 0.0
-    contingency_pct_developer: float = 0.0
+    workforce_roles: List[str] = field(
+        default_factory=lambda: ["Researcher", "Developer"]
+    )
+    contingency_pct: float = 0.0
 
     archetypes: List[Archetype] = field(default_factory=list)
+
+    @property
+    def all_roles(self) -> List[str]:
+        """Unique role names across all archetypes, preserving first-seen order."""
+        seen: set = set()
+        roles: List[str] = []
+        for arch in self.archetypes:
+            for sp in arch.stages.values():
+                for role in sp.fte_per_role:
+                    if role not in seen:
+                        seen.add(role)
+                        roles.append(role)
+        return roles if roles else list(self.workforce_roles)
 
 
 @dataclass
@@ -72,3 +92,8 @@ class ModelResult:
     steady_state_max_month: float
     projects_per_year: float
     yearly_projects: Dict[int, float] = field(default_factory=dict)
+    # Cost sensitivity band (populated when cost_min != cost_max)
+    cost_low_ss_avg: float = 0.0
+    cost_high_ss_avg: float = 0.0
+    cost_low_annual: pd.DataFrame = field(default_factory=pd.DataFrame)
+    cost_high_annual: pd.DataFrame = field(default_factory=pd.DataFrame)
