@@ -226,9 +226,32 @@ def generate_comparison_excel(
     ws_sum["A1"] = "Scenario Comparison Summary"
     ws_sum["A1"].font = title_font
 
+    # Callout: leanest / heaviest / spread
+    _avgs = {name: res.steady_state_avg for name, cfg, res in results}
+    _min_name = min(_avgs, key=_avgs.get)
+    _max_name = max(_avgs, key=_avgs.get)
+    _min_val = _avgs[_min_name]
+    _max_val = _avgs[_max_name]
+    _spread = _max_val - _min_val
+    ws_sum["A2"] = (
+        f"Leanest: {_min_name} ({_min_val:,.0f} FTE). "
+        f"Heaviest: {_max_name} ({_max_val:,.0f} FTE). "
+        f"Spread: {_spread:,.0f} FTE."
+    )
+    ws_sum["A2"].font = Font(name="Calibri", size=10, color="7F8C8D")
+
     summary_df = comparison_summary(results)
+    _preferred_order = [
+        "Scenario", "Avg FTE (last yr)", "Peak FTE", "Budget (M)", "Overhead",
+        "Net Budget (M)", "Avg Projects/yr", "Portfolio Split", "Success Rate",
+        "FTE Range (cost)",
+    ]
+    _reordered = [c for c in _preferred_order if c in summary_df.columns]
+    _remaining = [c for c in summary_df.columns if c not in _reordered]
+    summary_df = summary_df[_reordered + _remaining]
+
     cols = list(summary_df.columns)
-    row = 3
+    row = 4
     for ci, h in enumerate(cols, 1):
         ws_sum.cell(row=row, column=ci, value=h)
     _hdr_row(ws_sum, row, len(cols))
@@ -239,7 +262,7 @@ def generate_comparison_excel(
         _data_row(ws_sum, row, len(cols), alt=(ri % 2 == 1))
         row += 1
     for ci in range(1, len(cols) + 1):
-        ws_sum.column_dimensions[get_column_letter(ci)].width = 18
+        ws_sum.column_dimensions[get_column_letter(ci)].width = 20
 
     # ── Per-scenario sheets
     for name, cfg, res in results:
