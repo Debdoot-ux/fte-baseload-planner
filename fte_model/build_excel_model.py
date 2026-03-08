@@ -167,10 +167,11 @@ def build_inputs_sheet(wb):
          "This is the money available to fund projects.\nDo not edit \u2014 this is a formula."),
         None,
         ("First year of new projects", 2026, "StartYear", False, "0",
-         "The first calendar year when new projects begin.\nProjects from this year may still be running in later years."),
+         "Fixed to 2026. The Excel model is built for 2026\u20132030.\n"
+         "To change the year range, update defaults.py and re-run build_excel_model.py."),
         ("Last year of new projects", 2030, "EndYear", False, "0",
-         "The last calendar year when new projects are started.\n"
-         "Projects already in progress continue beyond this year until they finish."),
+         "Fixed to 2030. The Excel model is built for 2026\u20132030.\n"
+         "To change the year range, update defaults.py and re-run build_excel_model.py."),
         ("Intake window (months per year)", 6, "IntakeMonths", True, "0",
          "New projects are spread evenly across the first N months of each year.\n"
          "E.g. 6 means projects start in Jan\u2013Jun, not all in January.\nThis smooths out headcount peaks."),
@@ -192,9 +193,12 @@ def build_inputs_sheet(wb):
         if named == "NetBudget":
             cell.value = "=Budget*(1-Overhead)"
             _style_data_cell(ws, row, 3, is_formula=True)
-        else:
+        elif is_input:
             cell.value = val
             _style_data_cell(ws, row, 3, is_input=True)
+        else:
+            cell.value = val
+            _style_data_cell(ws, row, 3, is_formula=True)
 
         if fmt:
             cell.number_format = fmt
@@ -645,7 +649,7 @@ def build_glossary_sheet(wb):
         ("The cost is weighted by your portfolio mix and which stages projects go through.", label_font),
         ("", None),
         ("Step 3: Distribute projects across types and stages", Font(name="Calibri", size=10, bold=True, color=NAVY)),
-        ("Projects are split across archetypes (Chemistry, Hardware: Mechanical, Hardware: Process, Algorithm Software) by portfolio share.", label_font),
+        ("Projects are split across archetypes (Chemistry, Hardware: Mechanical, Hardware: Process, Algorithm) by portfolio share.", label_font),
         ("Within each type, some start at TRL 1-4 (early) and some start directly at TRL 5-7 (late).", label_font),
         ("When early-stage projects finish, a percentage advance to TRL 5-7 as additional projects.", label_font),
         ("", None),
@@ -686,7 +690,7 @@ def build_glossary_sheet(wb):
         ("(Changing these would require rebuilding the sheet structure)", note_font),
         ("", None),
         ("\u2022 2 pipeline stages (TRL 1-4 and TRL 5-7)", label_font),
-        ("\u2022 4 project types (Chemistry, Hardware: Mechanical, Hardware: Process, Algorithm Software)", label_font),
+        ("\u2022 4 project types (Chemistry, Hardware: Mechanical, Hardware: Process, Algorithm)", label_font),
         ("\u2022 2 FTE roles (Research and Developer)", label_font),
         ("\u2022 Monthly granularity \u2014 projects tracked month by month", label_font),
         ("\u2022 No ramp-up \u2014 projects start at full staffing immediately", label_font),
@@ -1185,16 +1189,12 @@ def main():
     print("Building Output sheet...")
     build_output_sheet(wb, totals_col, adj_col)
 
-    desired_order = [
-        "Output",
-        "Inputs",
-        "Budget",
-        "Engine",
-        "Glossary",
-    ]
-    sheet_indices = {ws.title: i for i, ws in enumerate(wb.worksheets)}
-    new_order = [sheet_indices[name] for name in desired_order]
-    wb._sheets = [wb.worksheets[i] for i in new_order]
+    desired_order = ["Output", "Inputs", "Budget", "Engine", "Glossary"]
+    for target_pos, name in enumerate(desired_order):
+        for i, ws in enumerate(wb.worksheets):
+            if ws.title == name and i != target_pos:
+                wb.move_sheet(ws, offset=target_pos - i)
+                break
 
     out_path = r"c:\Users\Debdoot Ray\genAI training\fte_model\FTE_Baseload_Model_Live.xlsx"
     wb.save(out_path)

@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import Archetype, ModelConfig, StageParams
 from defaults import default_baseline
-from model import run_model, _weighted_cost_per_project
+from model import run_model, weighted_cost_per_project
 from scenario_engine import run_all, comparison_summary, generate_comparison_excel
 
 # ---------------------------------------------------------------------------
@@ -366,12 +366,9 @@ def _clear_scenario_keys(from_idx: int):
 
 def _sync_archetypes(cfg: ModelConfig):
     for arch in cfg.archetypes:
-        # Collect the union of roles defined across this archetype's stages
-        arch_roles: set = set()
+        arch_roles: set = set(cfg.workforce_roles)
         for sp in arch.stages.values():
             arch_roles.update(sp.fte_per_role.keys())
-        if not arch_roles:
-            arch_roles = set(cfg.workforce_roles)
 
         for sname in cfg.pipeline_stages:
             if sname not in arch.stages:
@@ -1591,7 +1588,7 @@ You tell it how much money you have and what types of projects you run. It tells
 
         st.markdown('<div class="card"><h5>Derived outputs</h5>', unsafe_allow_html=True)
         try:
-            wc = _weighted_cost_per_project(cfg)
+            wc = weighted_cost_per_project(cfg)
         except Exception:
             wc = 0
         derived_rows = [

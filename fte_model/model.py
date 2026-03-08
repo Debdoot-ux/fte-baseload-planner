@@ -53,7 +53,7 @@ def _expected_cost_from_stage(
     return cost
 
 
-def _weighted_cost_per_project(cfg: ModelConfig, mix: Dict[str, float] | None = None) -> float:
+def weighted_cost_per_project(cfg: ModelConfig, mix: Dict[str, float] | None = None) -> float:
     """Portfolio-weighted average lifecycle cost per project."""
     if mix is None:
         mix = cfg.stage_mix
@@ -71,10 +71,10 @@ def _weighted_cost_per_project(cfg: ModelConfig, mix: Dict[str, float] | None = 
     return total
 
 
-def _projects_per_year(cfg: ModelConfig) -> float:
+def projects_per_year(cfg: ModelConfig) -> float:
     """Commitment-model project count (for display only)."""
     budget = _available_budget(cfg)
-    wc = _weighted_cost_per_project(cfg)
+    wc = weighted_cost_per_project(cfg)
     if wc <= 0:
         return 0.0
     return budget / wc
@@ -84,7 +84,7 @@ def _projects_for_year(cfg: ModelConfig, year: int) -> float:
     """Commitment-model project count for a specific year (for display only)."""
     mix = _get_stage_mix(cfg, year)
     budget = _available_budget(cfg)
-    wc = _weighted_cost_per_project(cfg, mix)
+    wc = weighted_cost_per_project(cfg, mix)
     if wc <= 0:
         return 0.0
     return budget / wc

@@ -1,123 +1,19 @@
 """
-Scenario engine: converts parsed Excel data into ModelConfig objects, runs the
-model for each scenario, and produces comparison outputs.
+Scenario engine: runs the model for each scenario and produces comparison outputs.
 """
 
 from __future__ import annotations
 
-import copy
 import io
-from collections import defaultdict
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-from config import Archetype, ModelConfig, ModelResult, StageParams
-from defaults import default_baseline
+from config import ModelConfig, ModelResult
 from model import run_model
-from scenario_parser import ParseResult, ParsedProject
-
-
-# ── Build ModelConfig list from parsed data ───────────────────────────────
-
-def _consolidate_projects(
-    projects: List[ParsedProject],
-    method: str = "average",
-) -> Dict[Tuple[str, str], Tuple[Optional[int], Optional[float], Optional[float]]]:
-    """Group parsed projects by (archetype, phase) and consolidate into
-    single (duration, fte, cost) tuples."""
-    groups: Dict[Tuple[str, str], List[ParsedProject]] = defaultdict(list)
-    for p in projects:
-        groups[(p.archetype, p.phase)].append(p)
-
-    consolidated: Dict[Tuple[str, str], Tuple[Optional[int], Optional[float], Optional[float]]] = {}
-
-    for key, projs in groups.items():
-        if method == "first":
-            p = projs[0]
-            consolidated[key] = (p.duration_months, p.fte, p.cost_millions)
-        else:
-            durs = [p.duration_months for p in projs if p.duration_months is not None]
-            ftes = [p.fte for p in projs if p.fte is not None]
-            costs = [p.cost_millions for p in projs if p.cost_millions is not None]
-            consolidated[key] = (
-                int(round(sum(durs) / len(durs))) if durs else None,
-                sum(ftes) / len(ftes) if ftes else None,
-                sum(costs) / len(costs) if costs else None,
-            )
-
-    return consolidated
-
-
-def build_configs(
-    parsed: ParseResult,
-    consolidation: str = "average",
-    defaults: Optional[ModelConfig] = None,
-) -> List[Tuple[str, ModelConfig]]:
-    """Convert ParseResult into a list of (name, ModelConfig) tuples."""
-    if defaults is None:
-        defaults = default_baseline()
-
-    consolidated = _consolidate_projects(parsed.projects, consolidation)
-    arch_names = parsed.archetype_names or [a.name for a in defaults.archetypes]
-    phase_names = parsed.phase_names or defaults.pipeline_stages
-
-    configs: List[Tuple[str, ModelConfig]] = []
-
-    for scen in parsed.scenarios:
-        cfg = copy.deepcopy(defaults)
-
-        if scen.budget is not None:
-            cfg.total_budget_m = scen.budget
-        if scen.overhead_pct is not None:
-            cfg.overhead_pct = scen.overhead_pct
-        if scen.stage_mix is not None:
-            cfg.stage_mix = dict(scen.stage_mix)
-        if scen.conversion_rates is not None:
-            cfg.stage_conversion_rates = dict(scen.conversion_rates)
-
-        cfg.pipeline_stages = list(phase_names)
-        cfg.workforce_roles = ["Researcher"]
-
-        archetypes: List[Archetype] = []
-        for aname in arch_names:
-            share = 0.0
-            if scen.archetype_shares and aname in scen.archetype_shares:
-                share = scen.archetype_shares[aname]
-
-            stages: Dict[str, StageParams] = {}
-            for pname in phase_names:
-                key = (aname, pname)
-                if key in consolidated:
-                    dur, fte, cost = consolidated[key]
-                    cost_val = cost if cost else 1.0
-                    stages[pname] = StageParams(
-                        duration_months=dur if dur else 12,
-                        cost_min=cost_val,
-                        cost_max=cost_val,
-                        fte_per_role={"Researcher": fte if fte else 1.0},
-                    )
-                else:
-                    stages[pname] = StageParams(
-                        duration_months=12,
-                        cost_min=1.0,
-                        cost_max=1.0,
-                        fte_per_role={"Researcher": 1.0},
-                    )
-
-            archetypes.append(Archetype(
-                name=aname,
-                portfolio_share=share,
-                stages=stages,
-            ))
-
-        cfg.archetypes = archetypes
-        configs.append((scen.name, cfg))
-
-    return configs
 
 
 # ── Run all scenarios ─────────────────────────────────────────────────────

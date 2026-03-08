@@ -9,11 +9,10 @@ from openpyxl import load_workbook
 
 from config import Archetype, ModelConfig, ModelResult, StageParams
 from defaults import default_baseline
-from model import run_model, _weighted_cost_per_project, _projects_per_year
+from model import run_model, weighted_cost_per_project, projects_per_year
 from scenario_engine import (
-    build_configs, run_all, comparison_summary, generate_comparison_excel,
+    run_all, comparison_summary, generate_comparison_excel,
 )
-from scenario_parser import parse_excel
 
 PASS = 0
 FAIL = 0
@@ -41,7 +40,7 @@ check("Portfolio sums to 100%", abs(sum(a.portfolio_share for a in cfg.archetype
 check("2 pipeline stages", cfg.pipeline_stages == ["TRL 1-4", "TRL 5-7"])
 check("Stage mix sums to 100%", abs(sum(cfg.stage_mix.values()) - 1.0) < 0.001)
 check("2 workforce roles", cfg.workforce_roles == ["Researcher", "Developer"])
-check("Empty contingency", cfg.contingency_pct == {})
+check("Empty contingency", cfg.contingency_pct == 0.0)
 check("Budget 400M", cfg.total_budget_m == 400.0)
 check("Overhead 30%", cfg.overhead_pct == 0.30)
 check("Cashflow mode", cfg.budget_mode == "cashflow")
@@ -260,8 +259,8 @@ check("Cost range: year alignment",
       list(res_cr.annual_summary["Year"]) == list(res_cr.cost_low_annual["Year"]) == list(res_cr.cost_high_annual["Year"]))
 
 # Expected cost == midpoint
-wc_orig = _weighted_cost_per_project(cfg)
-wc_range = _weighted_cost_per_project(cfg_cr)
+wc_orig = weighted_cost_per_project(cfg)
+wc_range = weighted_cost_per_project(cfg_cr)
 check("Symmetric range preserves expected cost",
       abs(wc_orig - wc_range) < 0.001,
       f"orig={wc_orig:.4f} range={wc_range:.4f}")
@@ -282,21 +281,16 @@ print("SECTION 8: CONTINGENCY BUFFER")
 print("=" * 70)
 
 cfg_cont = copy.deepcopy(cfg)
-cfg_cont.contingency_pct = {"Researcher": 0.10, "Developer": 0.20}
+cfg_cont.contingency_pct = 0.15
 res_cont = run_model(cfg_cont)
 
-# Contingency doesn't change model output, only UI display
 check("Contingency: model still runs", not res_cont.monthly.empty)
 check("Contingency: same steady_state as no-contingency",
       abs(res_cont.steady_state_avg - result.steady_state_avg) < 0.1)
 
-# Simulate UI adjustment
 ann = res_cont.annual_summary
 last_yr = ann[ann["Year"] == cfg_cont.end_year].iloc[0]
-adj_total = (
-    last_yr["Avg Researcher FTE"] * 1.10 +
-    last_yr["Avg Developer FTE"] * 1.20
-)
+adj_total = last_yr["Avg monthly FTE"] * (1 + 0.15)
 check("Contingency: adjusted total > raw total",
       adj_total > last_yr["Avg monthly FTE"])
 

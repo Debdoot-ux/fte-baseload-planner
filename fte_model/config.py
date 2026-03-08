@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from typing import Dict, List
 
@@ -66,6 +67,27 @@ class ModelConfig:
     contingency_pct: float = 0.0
 
     archetypes: List[Archetype] = field(default_factory=list)
+
+    def __post_init__(self):
+        if self.total_budget_m < 0:
+            self.total_budget_m = 0.0
+        self.overhead_pct = max(0.0, min(1.0, self.overhead_pct))
+        if self.end_year < self.start_year:
+            self.end_year = self.start_year
+        if self.archetypes:
+            share_sum = sum(a.portfolio_share for a in self.archetypes)
+            if abs(share_sum - 1.0) > 0.05:
+                warnings.warn(
+                    f"Archetype portfolio shares sum to {share_sum:.2f}, expected 1.0",
+                    stacklevel=2,
+                )
+        if self.stage_mix:
+            mix_sum = sum(self.stage_mix.values())
+            if abs(mix_sum - 1.0) > 0.05:
+                warnings.warn(
+                    f"Stage mix values sum to {mix_sum:.2f}, expected 1.0",
+                    stacklevel=2,
+                )
 
     @property
     def all_roles(self) -> List[str]:
