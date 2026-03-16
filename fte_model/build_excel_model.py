@@ -8,6 +8,7 @@ Includes per-role contingency % for buffered headcount.
 """
 
 import datetime
+from pathlib import Path
 from openpyxl import Workbook
 from openpyxl.comments import Comment
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, numbers
@@ -869,8 +870,8 @@ def build_engine_sheet(wb):
     )
     ws.cell(row=3, column=first_tot_col).comment = _cmt("Total FTE = Research + Developer.")
 
-    ws.cell(row=3, column=totals_col).comment = _cmt("Sum of Research FTE across all three archetypes.")
-    ws.cell(row=3, column=totals_col + 1).comment = _cmt("Sum of Developer FTE across all three archetypes.")
+    ws.cell(row=3, column=totals_col).comment = _cmt("Sum of Research FTE across all four archetypes.")
+    ws.cell(row=3, column=totals_col + 1).comment = _cmt("Sum of Developer FTE across all four archetypes.")
     ws.cell(row=3, column=totals_col + 2).comment = _cmt("Grand total FTE (base) = Total Research + Total Developer.")
     ws.cell(row=3, column=adj_col).comment = _cmt("= Total Research \u00d7 (1 + Research Contingency %).")
     ws.cell(row=3, column=adj_col + 1).comment = _cmt("= Total Developer \u00d7 (1 + Developer Contingency %).")
@@ -1196,7 +1197,7 @@ def main():
                 wb.move_sheet(ws, offset=target_pos - i)
                 break
 
-    out_path = r"c:\Users\Debdoot Ray\genAI training\fte_model\FTE_Baseload_Model_Live.xlsx"
+    out_path = Path(__file__).parent / "FTE_Baseload_Model_Live.xlsx"
     wb.save(out_path)
     print(f"\nSaved to: {out_path}")
     print("Open in Excel and try changing a yellow cell on the Inputs sheet!")

@@ -1,6 +1,6 @@
 """Baseline assumptions for the FTE model."""
 
-from config import Archetype, ModelConfig, StageParams
+from config import Archetype, ModelConfig, NormSource, NormStageData, NormsConfig, StageParams
 
 
 def default_baseline() -> ModelConfig:
@@ -92,8 +92,52 @@ def default_baseline() -> ModelConfig:
         stage_mix_phase2={"TRL 1-4": 0.40, "TRL 5-7": 0.60},
         phase2_start_year=2028,
         intake_spread_months=6,
-        utilization_rate=1.0,
+        utilization_rate=0.70,
         ramp_months=0,
         workforce_roles=["Researcher", "Developer"],
         archetypes=[chemistry, hardware_mechanical, hardware_process, algorithm],
+        norms_config=default_norms_config(),
+    )
+
+
+def default_norm_sources() -> list[NormSource]:
+    """Shell, Chevron, and BASF benchmark data from v5 normalization workbook."""
+    N = NormStageData
+    shell = NormSource(name="Shell", data={
+        ("Chemistry", "TRL 1-4"):            N(fte=6.5,  cost_myr=40.0,  duration_months=48),
+        ("Chemistry", "TRL 5-7"):            N(fte=10.0, cost_myr=200.0, duration_months=72),
+        ("Hardware: Mechanical", "TRL 1-4"):  N(fte=12.0, cost_myr=40.0,  duration_months=48),
+        ("Hardware: Mechanical", "TRL 5-7"):  N(fte=17.5, cost_myr=100.0, duration_months=72),
+        ("Hardware: Process", "TRL 1-4"):     N(fte=6.5,  cost_myr=80.0,  duration_months=60),
+        ("Hardware: Process", "TRL 5-7"):     N(fte=15.0, cost_myr=200.0, duration_months=78),
+        ("Algorithm", "TRL 1-4"):            N(fte=4.5,  cost_myr=8.0,   duration_months=18),
+        ("Algorithm", "TRL 5-7"):            N(fte=10.0, cost_myr=24.0,  duration_months=18),
+    })
+    chevron = NormSource(name="Chevron", data={
+        ("Chemistry", "TRL 1-4"):            N(fte=2.5,  cost_myr=6.0,   duration_months=48),
+        ("Chemistry", "TRL 5-7"):            N(fte=15.5, cost_myr=140.0, duration_months=72),
+        ("Hardware: Mechanical", "TRL 1-4"):  N(fte=8.0,  cost_myr=6.0,   duration_months=48),
+        ("Hardware: Mechanical", "TRL 5-7"):  N(fte=27.5, cost_myr=140.0, duration_months=72),
+        ("Hardware: Process", "TRL 1-4"):     N(fte=8.5,  cost_myr=6.0,   duration_months=60),
+        ("Hardware: Process", "TRL 5-7"):     N(fte=25.0, cost_myr=300.0, duration_months=90),
+        ("Algorithm", "TRL 1-4"):            N(fte=3.5,  cost_myr=6.0,   duration_months=18),
+        ("Algorithm", "TRL 5-7"):            N(fte=7.5,  cost_myr=30.0,  duration_months=18),
+    })
+    basf = NormSource(name="BASF", data={
+        ("Chemistry", "TRL 1-4"):            N(fte=5.0,  cost_myr=6.0,   duration_months=48),
+        ("Chemistry", "TRL 5-7"):            N(fte=27.5, cost_myr=100.0, duration_months=36, technicians=20.0),
+        ("Hardware: Mechanical", "TRL 1-4"):  N(fte=5.0,  cost_myr=6.0,   duration_months=48),
+        ("Hardware: Mechanical", "TRL 5-7"):  N(fte=27.5, cost_myr=40.0,  duration_months=36, technicians=20.0),
+        ("Hardware: Process", "TRL 1-4"):     N(fte=10.0, cost_myr=30.0,  duration_months=48),
+        ("Hardware: Process", "TRL 5-7"):     N(fte=60.0, cost_myr=300.0, duration_months=54, technicians=50.0),
+        ("Algorithm", "TRL 1-4"):            N(fte=4.5,  cost_myr=8.0,   duration_months=18),
+        ("Algorithm", "TRL 5-7"):            N(fte=10.0, cost_myr=24.0,  duration_months=18),
+    })
+    return [shell, chevron, basf]
+
+
+def default_norms_config() -> NormsConfig:
+    return NormsConfig(
+        sources=default_norm_sources(),
+        selected_sources=["Shell", "Chevron"],
     )

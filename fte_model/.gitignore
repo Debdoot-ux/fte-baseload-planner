@@ -9,5 +9,3 @@ env/
 dist/
 build/
 .streamlit/secrets.toml
-scenario_parser.py
-generate_tracy_report.py

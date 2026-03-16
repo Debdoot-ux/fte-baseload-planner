@@ -12,7 +12,7 @@ from typing import Dict, List, Tuple
 
 import pandas as pd
 
-from config import Archetype, ModelConfig, ModelResult, StageParams
+from config import Archetype, ModelConfig, ModelResult
 
 
 def _available_budget(cfg: ModelConfig) -> float:
@@ -393,7 +393,7 @@ def _commitment_yearly_projects(cfg: ModelConfig) -> Dict[int, float]:
     return yearly
 
 
-def run(cfg: ModelConfig) -> Dict:
+def _run(cfg: ModelConfig) -> Dict:
     tail_months = 0
     for a in cfg.archetypes:
         arch_dur = sum(
@@ -432,7 +432,7 @@ def run(cfg: ModelConfig) -> Dict:
 
 
 def run_model(cfg: ModelConfig) -> ModelResult:
-    res = run(cfg)
+    res = _run(cfg)
     monthly = res["monthly"]
 
     annual = _build_annual_summary(monthly, cfg)
@@ -459,7 +459,7 @@ def run_model(cfg: ModelConfig) -> ModelResult:
         for arch in cfg_low.archetypes:
             for sp in arch.stages.values():
                 sp.cost_max = sp.cost_min
-        res_low = run(cfg_low)
+        res_low = _run(cfg_low)
         low_annual = _build_annual_summary(res_low["monthly"], cfg_low)
         low_ss, _, _ = _steady_state(res_low["monthly"], cfg_low)
 
@@ -467,7 +467,7 @@ def run_model(cfg: ModelConfig) -> ModelResult:
         for arch in cfg_high.archetypes:
             for sp in arch.stages.values():
                 sp.cost_min = sp.cost_max
-        res_high = run(cfg_high)
+        res_high = _run(cfg_high)
         high_annual = _build_annual_summary(res_high["monthly"], cfg_high)
         high_ss, _, _ = _steady_state(res_high["monthly"], cfg_high)
 
@@ -476,7 +476,89 @@ def run_model(cfg: ModelConfig) -> ModelResult:
         result.cost_low_annual = low_annual
         result.cost_high_annual = high_annual
 
+    # Norms overlay
+    if cfg.norms_config.enabled:
+        norms = cfg.norms_config.combined_norms()
+        norms_annual, norms_breakdown = _compute_norms_fte(monthly, cfg, norms)
+        result.norms_annual = norms_annual
+        result.norms_breakdown = norms_breakdown
+        result.combined_norms = norms
+
     return result
+
+
+def _compute_norms_fte(
+    monthly: pd.DataFrame,
+    cfg: ModelConfig,
+    combined_norms: Dict,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Derive FTE from peer staffing norms using the same active project stock.
+
+    When metric is FTE/MYR M:
+        FTE_per_project = norm x cost
+    When metric is PY/MYR M:
+        FTE_per_project = norm x cost / project_duration_years
+    Then: norms_fte = effective_projects x FTE_per_project / utilization
+    """
+    if monthly.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    utilization = max(cfg.utilization_rate, 0.01)
+    is_py = cfg.norms_config.norm_metric == "py_per_myr"
+
+    arch_map = {a.name: a for a in cfg.archetypes}
+    rows = []
+    for _, row in monthly.iterrows():
+        arch_name = row["archetype"]
+        stage = row["stage"]
+        n = row["effective_projects"]
+        if n < 1e-9:
+            continue
+
+        key = (arch_name, stage)
+        norm_val = combined_norms.get(key)
+        arch = arch_map.get(arch_name)
+        if norm_val is None or arch is None or stage not in arch.stages:
+            continue
+
+        sp = arch.stages[stage]
+        cost = sp.cost_millions
+
+        if is_py:
+            dur_years = max(sp.duration_months / 12.0, 1 / 12)
+            fte_per_project = norm_val * cost / dur_years
+        else:
+            fte_per_project = norm_val * cost
+        norms_fte = n * fte_per_project / utilization
+
+        rows.append({
+            "month": row["month"],
+            "year": row["year"],
+            "archetype": arch_name,
+            "stage": stage,
+            "effective_projects": n,
+            "norms_fte": norms_fte,
+        })
+
+    breakdown = pd.DataFrame(rows)
+    if breakdown.empty:
+        return pd.DataFrame(), breakdown
+
+    # Annual summary
+    summary_end = max(cfg.end_year, cfg.horizon_end_year) if cfg.horizon_end_year > 0 else cfg.end_year
+    annual_rows = []
+    for yr in range(cfg.start_year, summary_end + 1):
+        yr_data = breakdown[breakdown["year"] == yr]
+        if yr_data.empty:
+            annual_rows.append({"Year": yr, "Norms Avg FTE": 0})
+            continue
+        monthly_totals = yr_data.groupby("month")["norms_fte"].sum()
+        annual_rows.append({
+            "Year": yr,
+            "Norms Avg FTE": round(monthly_totals.mean(), 1),
+        })
+
+    return pd.DataFrame(annual_rows), breakdown
 
 
 def _build_annual_summary(monthly, cfg):
@@ -488,7 +570,8 @@ def _build_annual_summary(monthly, cfg):
     role_cols = [f"fte_{role}" for role in all_roles
                  if f"fte_{role}" in monthly.columns]
 
-    for yr in range(cfg.start_year, cfg.end_year + 1):
+    summary_end = max(cfg.end_year, cfg.horizon_end_year) if cfg.horizon_end_year > 0 else cfg.end_year
+    for yr in range(cfg.start_year, summary_end + 1):
         yr_data = monthly[monthly["year"] == yr]
         if yr_data.empty:
             row = {

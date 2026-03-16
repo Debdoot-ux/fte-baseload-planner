@@ -16,7 +16,7 @@ from openpyxl.utils import get_column_letter
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from config import Archetype, ModelConfig, StageParams
+from config import Archetype, ModelConfig, NormSource, NormStageData, StageParams
 from defaults import default_baseline
 from model import run_model, weighted_cost_per_project
 from scenario_engine import run_all, comparison_summary, generate_comparison_excel
@@ -464,6 +464,25 @@ def _render_scenario_form(idx: int):
             ))
             if cfg.end_year <= cfg.start_year:
                 cfg.end_year = cfg.start_year + 1
+
+        _show_winddown = st.checkbox(
+            "Show wind-down after last intake year",
+            value=cfg.horizon_end_year > cfg.end_year,
+            key=f"{P}winddown_toggle",
+            help="After the last year of new projects, existing projects keep running. "
+                 "Turn this on to see how headcount tapers off.",
+        )
+        if _show_winddown:
+            cfg.horizon_end_year = int(st.number_input(
+                "Show results through year",
+                value=max(cfg.horizon_end_year, cfg.end_year + 5),
+                min_value=cfg.end_year + 1,
+                max_value=cfg.end_year + 20,
+                step=1, key=f"{P}horizon_yr",
+                help="How far into the future to display — projects already started will run to completion.",
+            ))
+        else:
+            cfg.horizon_end_year = 0
         st.markdown('</div>', unsafe_allow_html=True)
 
     with col_right:
@@ -817,6 +836,356 @@ def _render_scenario_form(idx: int):
         cfg.contingency_pct = cont_val / 100.0
     st.markdown('</div>', unsafe_allow_html=True)
 
+    # ── 6. Staffing Norms (Normalization) ─────────────────────────────────
+    st.markdown(
+        '<div class="card"><h5>Staffing Norms &mdash; '
+        '<span class="card-sub">Peer benchmark overlay</span></h5>',
+        unsafe_allow_html=True,
+    )
+    _render_norms_input(idx, cfg)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+def _render_norms_input(idx: int, cfg: ModelConfig):
+    """Normalization input section: dynamic peers, flexible combination, metric toggle."""
+    P = f"s{idx}_norm_"
+    nc = cfg.norms_config
+    _ml = nc.metric_label  # "FTE / MYR M" or "PY / MYR M"
+
+    # --- Top-level controls: norm metric + technician toggle ---
+    col_metric, col_tech = st.columns(2)
+    with col_metric:
+        _metric_opts = ["fte_per_myr", "py_per_myr"]
+        _metric_labels = {"fte_per_myr": "FTE / MYR M", "py_per_myr": "PY / MYR M (FTE \u00d7 Duration / Cost)"}
+        _metric_idx = _metric_opts.index(nc.norm_metric) if nc.norm_metric in _metric_opts else 0
+        nc.norm_metric = st.selectbox(
+            "Norm metric",
+            _metric_opts,
+            index=_metric_idx,
+            format_func=lambda x: _metric_labels.get(x, x),
+            key=f"{P}metric",
+            help="FTE/MYR M = headcount per MYR million. "
+                 "PY/MYR M = person-years per MYR million (captures effort intensity across duration).",
+        )
+        _ml = nc.metric_label
+    with col_tech:
+        nc.include_technicians = st.selectbox(
+            "Plant / lab technicians",
+            [True, False],
+            index=0 if nc.include_technicians else 1,
+            format_func=lambda x: "Include in FTE count" if x else "Exclude from FTE count",
+            key=f"{P}inc_tech",
+            help="FTE already includes technicians. 'Include' uses the full FTE count; "
+                 "'Exclude' subtracts technicians (FTE \u2212 Technicians) before computing the norm.",
+        )
+
+    # --- Peers to average (multi-select) ---
+    all_names = [s.name for s in nc.sources]
+    valid_selected = [n for n in nc.selected_sources if n in all_names]
+    nc.selected_sources = st.multiselect(
+        "Peers to average",
+        all_names,
+        default=valid_selected or all_names,
+        key=f"{P}sel_peers",
+        help="Select which peers to include in the benchmark average.",
+    )
+
+    # --- Per-peer expanders ---
+    _peers_to_remove = None
+    _mode_opts = ["detailed", "direct"]
+    _mode_labels = {
+        "detailed": "Detailed (FTE, Cost, Duration, Technicians)",
+        "direct": f"Quick (enter {_ml} directly)",
+    }
+    for si, src in enumerate(nc.sources):
+        with st.expander(f"{src.name}", expanded=False):
+            _cur = src.input_mode if src.input_mode in _mode_opts else "detailed"
+            src.input_mode = st.selectbox(
+                "Input mode", _mode_opts, index=_mode_opts.index(_cur),
+                format_func=lambda x: _mode_labels.get(x, x),
+                key=f"{P}mode_{si}",
+            )
+            _render_peer_table(idx, si, cfg, src, nc, _ml)
+            st.markdown('<div style="margin-top:0.5rem"></div>', unsafe_allow_html=True)
+            if st.button("Remove", key=f"{P}rm_{si}"):
+                _peers_to_remove = src.name
+
+    if _peers_to_remove:
+        nc.sources = [s for s in nc.sources if s.name != _peers_to_remove]
+        nc.selected_sources = [n for n in nc.selected_sources if n != _peers_to_remove]
+        st.rerun()
+
+    # --- Add peer ---
+    col_inp, col_btn = st.columns([3, 1])
+    with col_inp:
+        _new_name = st.text_input("Add new peer", value="", key=f"{P}new_peer",
+                                  placeholder="e.g. TotalEnergies")
+    with col_btn:
+        st.markdown('<div style="margin-top:1.6rem"></div>', unsafe_allow_html=True)
+        _add_clicked = st.button("Add peer", key=f"{P}add_peer", type="primary")
+    if _add_clicked and _new_name.strip():
+        clean = _new_name.strip()
+        if clean not in {s.name for s in nc.sources}:
+            nc.sources.append(NormSource(name=clean, data={}))
+            if clean not in nc.selected_sources:
+                nc.selected_sources.append(clean)
+            st.rerun()
+
+    # --- Combined norms preview ---
+    combined = nc.combined_norms()
+    if combined:
+        _active_label = " + ".join(nc.selected_sources) if nc.selected_sources else "all peers"
+        _tech_label = "incl. technicians" if nc.include_technicians else "excl. technicians"
+        st.markdown(
+            f'<span style="color:#051C2C;font-weight:700;font-size:0.8rem;'
+            f'letter-spacing:0.03em;">Combined Norms ({_ml})</span>'
+            f'<br><span style="color:#7F8C8D;font-size:0.75rem;">'
+            f'Average of {_active_label} &mdash; {_tech_label}.'
+            f'</span>',
+            unsafe_allow_html=True,
+        )
+        preview_rows = []
+        for (arch_name, stage), val in sorted(combined.items()):
+            preview_rows.append({
+                "Archetype": arch_name,
+                "Stage": stage,
+                _ml: round(val, 2),
+            })
+        st.dataframe(pd.DataFrame(preview_rows), hide_index=True, width="stretch")
+
+
+def _render_peer_table(idx: int, si: int, cfg: ModelConfig, src: NormSource,
+                       nc, metric_label: str):
+    """Editable inputs for one peer: per-archetype/stage rows."""
+    P = f"s{idx}_ns{si}_"
+    is_direct = src.input_mode == "direct"
+
+    for arch in cfg.archetypes:
+        for sname in cfg.pipeline_stages:
+            if sname not in arch.stages:
+                continue
+            key = (arch.name, sname)
+            if key not in src.data:
+                sp = arch.stages[sname]
+                src.data[key] = NormStageData(fte=0.0, cost_myr=0.0, duration_months=sp.duration_months)
+            nd = src.data[key]
+            label = f"{arch.name} \u2014 {sname}"
+            st.markdown(
+                f'<div style="font-size:0.78rem;font-weight:600;color:#051C2C;'
+                f'margin-top:0.7rem;margin-bottom:0.2rem">{label}</div>',
+                unsafe_allow_html=True,
+            )
+
+            if is_direct:
+                _default = nd.direct_ratio or nd.norm_value(nc.norm_metric, nc.include_technicians)
+                nd.direct_ratio = st.number_input(
+                    metric_label, value=round(float(_default), 2),
+                    min_value=0.0, step=0.01, format="%.2f",
+                    key=f"{P}{arch.name}_{sname}_dr",
+                )
+            else:
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    nd.fte = st.number_input(
+                        "FTE", value=float(nd.fte), min_value=0.0,
+                        step=0.5, format="%.1f", key=f"{P}{arch.name}_{sname}_fte",
+                    )
+                with c2:
+                    nd.cost_myr = st.number_input(
+                        "Cost (MYR M)", value=float(nd.cost_myr), min_value=0.0,
+                        step=1.0, format="%.1f", key=f"{P}{arch.name}_{sname}_cost",
+                    )
+                with c3:
+                    nd.duration_months = int(st.number_input(
+                        "Duration (mo)", value=int(nd.duration_months), min_value=1,
+                        step=1, key=f"{P}{arch.name}_{sname}_dur",
+                    ))
+                with c4:
+                    nd.technicians = st.number_input(
+                        "Technicians", value=float(nd.technicians), min_value=0.0,
+                        step=1.0, format="%.0f", key=f"{P}{arch.name}_{sname}_tech",
+                    )
+
+
+def _render_norms_output(cfg: ModelConfig, result, prefix: str):
+    """Norms analysis section in the Dashboard tab."""
+    if not cfg.norms_config.enabled:
+        return
+    norms_annual = result.norms_annual
+    norms_breakdown = result.norms_breakdown
+    if norms_annual is None or (isinstance(norms_annual, pd.DataFrame) and norms_annual.empty):
+        return
+
+    ann = result.annual_summary
+    if ann.empty:
+        return
+
+    nc = cfg.norms_config
+    _ml = nc.metric_label
+    if nc.selected_sources:
+        _preset_label = "Avg of " + " + ".join(nc.selected_sources)
+    else:
+        _preset_label = "Peer average"
+
+    if nc.norm_metric == "py_per_myr":
+        _formula_text = (
+            f'For each peer we compute a staffing norm = FTE \u00d7 Duration \u00f7 Cost ({_ml}). '
+            f'We average across peers ({_preset_label}) to get one norm per archetype &amp; TRL stage. '
+            f'Then: <em>Norms FTE = norm \u00d7 project cost \u00f7 project duration \u00d7 active projects</em>.'
+        )
+    else:
+        _formula_text = (
+            f'For each peer we compute a staffing norm = FTE \u00f7 Cost ({_ml}). '
+            f'We average across peers ({_preset_label}) to get one norm per archetype &amp; TRL stage. '
+            f'Then: <em>Norms FTE = norm \u00d7 project cost \u00d7 active projects</em>.'
+        )
+
+    st.markdown("---")
+    st.markdown("#### Staffing Norms Analysis")
+    st.markdown(
+        f'<div class="section-intro">'
+        f'<strong>How it works:</strong> {_formula_text} '
+        f'The result is compared against the Model FTE derived from your configured team sizes.'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Annual comparison: Model vs Norms vs Gap
+    merged = ann[["Year", "Avg monthly FTE"]].merge(
+        norms_annual[["Year", "Norms Avg FTE"]], on="Year", how="outer",
+    ).fillna(0)
+    merged["Gap"] = merged["Norms Avg FTE"] - merged["Avg monthly FTE"]
+    merged.rename(columns={"Avg monthly FTE": "Model Avg FTE"}, inplace=True)
+
+    # Overall metrics
+    _model_mean = merged["Model Avg FTE"].mean()
+    _norms_mean = merged["Norms Avg FTE"].mean()
+    _overall_gap = _norms_mean - _model_mean
+    _overall_ratio = _norms_mean / _model_mean if _model_mean > 0 else 0
+
+    # Compute portfolio-weighted normalization factor
+    combined = result.combined_norms
+    _weighted_num = 0.0
+    _weighted_den = 0.0
+    for arch in cfg.archetypes:
+        for sname, sp in arch.stages.items():
+            key = (arch.name, sname)
+            norm_val = combined.get(key, 0)
+            cost = sp.cost_millions
+            _weighted_num += norm_val * cost * arch.portfolio_share
+            _weighted_den += cost * arch.portfolio_share
+    _net_norm_factor = _weighted_num / _weighted_den if _weighted_den > 0 else 0
+
+    # --- Key insight ---
+    # Build archetype-level gap to find the biggest driver
+    monthly = result.monthly
+    _arch_gaps = {}
+    if not monthly.empty and not norms_breakdown.empty:
+        model_arch = monthly.groupby(["archetype", "year", "month"])["fte_total"].sum().groupby("archetype").mean()
+        norms_arch = norms_breakdown.groupby(["archetype", "year", "month"])["norms_fte"].sum().groupby("archetype").mean()
+        for arch_name in model_arch.index.union(norms_arch.index):
+            m_val = model_arch.get(arch_name, 0)
+            n_val = norms_arch.get(arch_name, 0)
+            _arch_gaps[arch_name] = n_val - m_val
+    if _arch_gaps:
+        _biggest_arch = max(_arch_gaps, key=lambda k: abs(_arch_gaps[k]))
+        _biggest_val = _arch_gaps[_biggest_arch]
+        if _overall_gap >= 0:
+            _insight = (
+                f'Peer benchmarks suggest <strong>{abs(_overall_gap):,.0f} more FTE</strong> '
+                f'than the current model ({_overall_ratio:.2f}x). '
+                f'The largest gap is in <strong>{_biggest_arch}</strong> ({_biggest_val:+,.0f} FTE).'
+            )
+        else:
+            _insight = (
+                f'The current model staffs <strong>{abs(_overall_gap):,.0f} more FTE</strong> '
+                f'than peer benchmarks would imply ({_overall_ratio:.2f}x). '
+                f'The largest deviation is in <strong>{_biggest_arch}</strong> ({_biggest_val:+,.0f} FTE).'
+            )
+        st.markdown(
+            f'<div style="background:#F0F7FA;border-left:4px solid #00A9F4;padding:0.7rem 1rem;'
+            f'border-radius:4px;margin-bottom:1rem;font-size:0.85rem;color:#051C2C">'
+            f'{_insight}</div>',
+            unsafe_allow_html=True,
+        )
+
+    # KPI cards
+    _gap_sign = "+" if _overall_gap >= 0 else ""
+    st.markdown(f"""<div style="display:flex;gap:1rem;margin-bottom:1rem;flex-wrap:wrap">
+<div class="kpi-card">
+<div class="kpi-label">Model Avg FTE</div>
+<div class="kpi-value">{_model_mean:,.0f}</div>
+<div class="kpi-sub">{cfg.start_year}\u2013{cfg.end_year} average</div>
+</div>
+<div class="kpi-card">
+<div class="kpi-label">Norms Avg FTE</div>
+<div class="kpi-value">{_norms_mean:,.0f}</div>
+<div class="kpi-sub">{cfg.start_year}\u2013{cfg.end_year} average</div>
+</div>
+<div class="kpi-card">
+<div class="kpi-label">Gap</div>
+<div class="kpi-value">{_gap_sign}{_overall_gap:,.0f} FTE</div>
+<div class="kpi-sub">Norms \u2212 Model ({_overall_ratio:.2f}x)</div>
+</div>
+<div class="kpi-card">
+<div class="kpi-label">Normalization Factor</div>
+<div class="kpi-value">{_net_norm_factor:.2f}</div>
+<div class="kpi-sub">{_ml} (portfolio-weighted)</div>
+</div>
+</div>""", unsafe_allow_html=True)
+
+    # Chart
+    fig_norms = go.Figure()
+    fig_norms.add_trace(go.Bar(
+        x=merged["Year"], y=merged["Model Avg FTE"],
+        name="Model FTE", marker_color=MCK_NAVY, opacity=0.85,
+        text=merged["Model Avg FTE"].apply(lambda x: f"{x:,.0f}"),
+        textposition="outside", textfont=dict(size=10),
+    ))
+    fig_norms.add_trace(go.Bar(
+        x=merged["Year"], y=merged["Norms Avg FTE"],
+        name="Norms FTE", marker_color=MCK_TEAL, opacity=0.85,
+        text=merged["Norms Avg FTE"].apply(lambda x: f"{x:,.0f}"),
+        textposition="outside", textfont=dict(size=10),
+    ))
+    fig_norms.update_layout(
+        barmode="group", height=400,
+        xaxis=dict(title="Year", dtick=1),
+        yaxis=dict(title="Avg Monthly FTE"),
+        legend=dict(orientation="h", y=-0.15, x=0.5, xanchor="center"),
+        margin=dict(t=40, b=60),
+    )
+    st.plotly_chart(fig_norms, width="stretch", key=f"{prefix}norms_chart")
+
+    # Year-wise data table
+    display_merged = merged.copy()
+    display_merged["Year"] = display_merged["Year"].astype(int)
+    display_merged["Model Avg FTE"] = display_merged["Model Avg FTE"].apply(lambda x: f"{x:,.0f}")
+    display_merged["Norms Avg FTE"] = display_merged["Norms Avg FTE"].apply(lambda x: f"{x:,.0f}")
+    display_merged["Gap"] = display_merged["Gap"].apply(lambda x: f"{x:+,.0f}")
+    st.dataframe(display_merged, width="stretch", hide_index=True)
+
+    # Breakdown by archetype/stage: Model vs Norms vs Gap
+    if isinstance(norms_breakdown, pd.DataFrame) and not norms_breakdown.empty and not monthly.empty:
+        with st.expander("Model vs Norms breakdown by archetype & stage"):
+            for yr in sorted(norms_breakdown["year"].unique()):
+                norms_yr = norms_breakdown[norms_breakdown["year"] == yr]
+                model_yr = monthly[monthly["year"] == yr]
+                n_pivot = norms_yr.groupby(["archetype", "stage"])["norms_fte"].mean().reset_index()
+                m_pivot = model_yr.groupby(["archetype", "stage"])["fte_total"].sum()
+                m_months = model_yr.groupby(["archetype", "stage"])["month"].nunique()
+                m_avg = (m_pivot / m_months.replace(0, 1)).reset_index()
+                m_avg.columns = ["archetype", "stage", "model_fte"]
+                combined_bk = n_pivot.merge(m_avg, on=["archetype", "stage"], how="outer").fillna(0)
+                combined_bk["gap"] = combined_bk["norms_fte"] - combined_bk["model_fte"]
+                combined_bk["model_fte"] = combined_bk["model_fte"].apply(lambda x: round(x, 1))
+                combined_bk["norms_fte"] = combined_bk["norms_fte"].apply(lambda x: round(x, 1))
+                combined_bk["gap"] = combined_bk["gap"].apply(lambda x: round(x, 1))
+                combined_bk.columns = ["Archetype", "Stage", "Norms FTE", "Model FTE", "Gap"]
+                combined_bk = combined_bk[["Archetype", "Stage", "Model FTE", "Norms FTE", "Gap"]]
+                st.markdown(f"**{int(yr)}**")
+                st.dataframe(combined_bk, width="stretch", hide_index=True)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # REUSABLE: Single scenario results
@@ -855,70 +1224,55 @@ def _render_single_result(name: str, cfg: ModelConfig, result, key_prefix: str =
 
     yp = result.yearly_projects
 
+    # Compute KPI values
+    _ann = result.annual_summary
+    _final_yr_avg = result.steady_state_avg
+
+    if not _ann.empty:
+        _all_yr_avg = _ann["Avg monthly FTE"].mean()
+        _peak_row = _ann.loc[_ann["Max monthly FTE"].idxmax()]
+        _peak_fte = _peak_row["Max monthly FTE"]
+        _peak_yr = int(_peak_row["Year"])
+    else:
+        _all_yr_avg = _final_yr_avg
+        _peak_fte = result.steady_state_max_month
+        _peak_yr = cfg.end_year
+
     if is_cashflow and yp:
         total_proj = sum(yp.values())
         yr_parts = [f"{yp.get(y, 0):,.0f}" for y in range(cfg.start_year, cfg.end_year + 1)]
         _proj_kpi_value = f"{total_proj:,.0f}"
-        _proj_kpi_label = "Total new projects"
-        _proj_kpi_sub = "Per year: " + " → ".join(yr_parts)
-
-        _ann = result.annual_summary
-        if not _ann.empty:
-            _peak_row = _ann.loc[_ann["Max monthly FTE"].idxmax()]
-            _peak_fte = _peak_row["Max monthly FTE"]
-            _peak_yr = int(_peak_row["Year"])
-        else:
-            _peak_fte = result.steady_state_max_month
-            _peak_yr = cfg.end_year
-
-        _kpi3_label = "Peak monthly FTE"
-        _kpi3_value = f"{_peak_fte:,.0f}"
-        _kpi3_sub = f"Highest single-month FTE across all years (in {_peak_yr})"
-        _kpi4_label = f"Avg FTE in {cfg.end_year}"
-        _kpi4_value = f"{result.steady_state_avg:,.0f}"
-        _kpi4_sub = "Average monthly headcount in the final year"
+        _proj_kpi_sub = "Per year: " + " \u2192 ".join(yr_parts)
     else:
-        _proj_kpi_value = f"{yp.get(cfg.start_year, result.projects_per_year):,.0f}" if yp else f"{result.projects_per_year:,.0f}"
-        _proj_kpi_label = "New projects per year"
-        _proj_kpi_sub = "Same count every year"
-        if has_phase2 and yp:
-            p1_val = yp.get(cfg.start_year, 0)
-            p2_val = yp.get(cfg.phase2_start_year, 0)
-            _proj_kpi_sub = (
-                f"{p1_val:,.0f}/yr in {cfg.start_year}\u2013{cfg.phase2_start_year - 1}, "
-                f"{p2_val:,.0f}/yr from {cfg.phase2_start_year}"
-            )
-        _kpi3_label = f"FTE range in {cfg.end_year}"
-        _kpi3_value = f"{result.steady_state_min_month:,.0f} \u2013 {result.steady_state_max_month:,.0f}"
-        _kpi3_sub = "Min to max monthly FTE — narrows as pipeline stabilizes"
-        _kpi4_label = "Steady-state headcount"
-        _kpi4_value = f"{result.steady_state_avg:,.0f}"
-        _kpi4_sub = f"Avg monthly FTE in {cfg.end_year} — the level the pipeline settles at"
+        _ppy = yp.get(cfg.start_year, result.projects_per_year) if yp else result.projects_per_year
+        total_proj = _ppy * (cfg.end_year - cfg.start_year + 1)
+        _proj_kpi_value = f"{total_proj:,.0f}"
+        _proj_kpi_sub = f"{_ppy:,.0f} per year"
 
-    # KPI cards (headcount first, budget last)
+    # KPI cards: Final year | Avg across years | Peak | Total projects
     st.markdown(f"""<div class="kpi-row">
 <div class="kpi-card">
-<div class="kpi-label">{_kpi4_label}</div>
-<div class="kpi-value">{_kpi4_value}</div>
-<div class="kpi-sub">{_kpi4_sub}</div>
+<div class="kpi-label">Avg FTE in {cfg.end_year}</div>
+<div class="kpi-value">{_final_yr_avg:,.0f}</div>
+<div class="kpi-sub">Final-year average monthly headcount</div>
 {_cont_ss_sub}
 {_cost_range_sub}
 </div>
 <div class="kpi-card">
-<div class="kpi-label">{_kpi3_label}</div>
-<div class="kpi-value">{_kpi3_value}</div>
-<div class="kpi-sub">{_kpi3_sub}</div>
+<div class="kpi-label">Avg FTE ({cfg.start_year}\u2013{cfg.end_year})</div>
+<div class="kpi-value">{_all_yr_avg:,.0f}</div>
+<div class="kpi-sub">Average across all years</div>
+</div>
+<div class="kpi-card">
+<div class="kpi-label">Peak monthly FTE</div>
+<div class="kpi-value">{_peak_fte:,.0f}</div>
+<div class="kpi-sub">Highest single month (in {_peak_yr})</div>
 {_cont_range_sub}
 </div>
 <div class="kpi-card">
-<div class="kpi-label">{_proj_kpi_label}</div>
+<div class="kpi-label">Total new projects</div>
 <div class="kpi-value">{_proj_kpi_value}</div>
 <div class="kpi-sub">{_proj_kpi_sub}</div>
-</div>
-<div class="kpi-card">
-<div class="kpi-label">Budget available for projects</div>
-<div class="kpi-value">{cfg.total_budget_m*(1-cfg.overhead_pct):,.0f} M</div>
-<div class="kpi-sub">{cfg.total_budget_m:,.0f} M total minus {cfg.overhead_pct*100:.0f}% overhead</div>
 </div>
 </div>""", unsafe_allow_html=True)
 
@@ -933,23 +1287,43 @@ def _render_single_result(name: str, cfg: ModelConfig, result, key_prefix: str =
             st.info("No data. Check that archetypes and shares are configured.")
         else:
             ann = result.annual_summary
+            _has_horizon = cfg.horizon_end_year > cfg.end_year
             if not ann.empty:
+                _intake_ann = ann[ann["Year"] <= cfg.end_year]
+                _last_intake_avg = _intake_ann["Avg monthly FTE"].iloc[-1] if not _intake_ann.empty else 0
                 _last_avg = ann["Avg monthly FTE"].iloc[-1]
-                if is_cashflow:
+                if is_cashflow and _has_horizon:
+                    _c1_title = (
+                        f"Peak demand hits {_peak_fte:,.0f} FTE in {_peak_yr}, "
+                        f"settling to ~{_last_intake_avg:,.0f} by {cfg.end_year} — "
+                        f"winds down to ~{_last_avg:,.0f} by {cfg.horizon_end_year}"
+                    )
+                elif is_cashflow:
                     _c1_title = f"Peak demand hits {_peak_fte:,.0f} FTE in {_peak_yr}, settling to ~{_last_avg:,.0f}"
                 else:
                     _c1_title = f"Headcount builds to ~{_last_avg:,.0f} FTE by {cfg.end_year}"
                 st.markdown(f"#### {_c1_title}")
+                _chart_subtitle = (
+                    'Bars show average monthly FTE per year; triangles mark the min and max months.'
+                )
+                if _has_horizon:
+                    _chart_subtitle += (
+                        f' <strong>Lighter bars ({cfg.end_year + 1}–{cfg.horizon_end_year})</strong>'
+                        ' = wind-down period, no new projects started.'
+                    )
                 st.markdown(
-                    '<div class="section-intro">Bars show average monthly FTE per year; '
-                    'triangles mark the min and max months.</div>',
+                    f'<div class="section-intro">{_chart_subtitle}</div>',
                     unsafe_allow_html=True,
                 )
 
                 fig_main = go.Figure()
+                _bar_colors = [
+                    MCK_NAVY if yr <= cfg.end_year else "#A0B4D0"
+                    for yr in ann["Year"]
+                ]
                 fig_main.add_trace(go.Bar(
                     x=ann["Year"], y=ann["Avg monthly FTE"], name="Avg monthly FTE",
-                    marker_color=MCK_NAVY, opacity=0.85,
+                    marker_color=_bar_colors, opacity=0.85,
                 ))
                 if has_contingency:
                     fig_main.add_trace(go.Bar(
@@ -983,15 +1357,24 @@ def _render_single_result(name: str, cfg: ModelConfig, result, key_prefix: str =
                     x=ann["Year"], y=ann["Max monthly FTE"], name="Max month",
                     mode="markers", marker=dict(color=MCK_BLUE, size=8, symbol="triangle-up"),
                 ))
-                _final_yr = int(ann["Year"].iloc[-1])
                 fig_main.add_annotation(
-                    x=_final_yr, y=_last_avg,
-                    text=f"<b>{_last_avg:,.0f}</b>",
+                    x=cfg.end_year, y=_last_intake_avg,
+                    text=f"<b>{_last_intake_avg:,.0f}</b>",
                     showarrow=True, arrowhead=0, arrowcolor=MCK_NAVY,
                     ax=30, ay=-25,
                     font=dict(size=13, color=MCK_NAVY),
                     bgcolor="white", bordercolor=MCK_NAVY, borderwidth=1, borderpad=3,
                 )
+                if _has_horizon:
+                    _final_yr = int(ann["Year"].iloc[-1])
+                    fig_main.add_annotation(
+                        x=_final_yr, y=_last_avg,
+                        text=f"<b>{_last_avg:,.0f}</b>",
+                        showarrow=True, arrowhead=0, arrowcolor="#A0B4D0",
+                        ax=30, ay=-25,
+                        font=dict(size=11, color="#A0B4D0"),
+                        bgcolor="white", bordercolor="#A0B4D0", borderwidth=1, borderpad=3,
+                    )
                 fig_main.update_layout(
                     barmode="overlay" if has_contingency else "relative",
                     height=400,
@@ -1115,7 +1498,10 @@ def _render_single_result(name: str, cfg: ModelConfig, result, key_prefix: str =
                         for role in sp.fte_per_role:
                             row_data[f"{role} FTE"] = f"{sp.fte_per_role[role]:.1f}"
                         bk_rows.append(row_data)
-                st.dataframe(pd.DataFrame(bk_rows), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(bk_rows), width="stretch", hide_index=True)
+
+            # ── Staffing Norms Analysis ──────────────────────────────────────
+            _render_norms_output(cfg, result, P)
 
     # ── How It Works ──
     with tab_how:
@@ -1281,6 +1667,43 @@ You tell it how much money you have and what types of projects you run. It tells
 </div>
 """, unsafe_allow_html=True)
 
+        # Step 6: Staffing Norms
+        if cfg.norms_config.enabled:
+            _nc_how = cfg.norms_config
+            _ml_how = _nc_how.metric_label
+            if _nc_how.selected_sources:
+                _preset_label_how = "Avg of " + " + ".join(_nc_how.selected_sources)
+            else:
+                _preset_label_how = "peer average"
+            _tech_label_how = "including" if _nc_how.include_technicians else "excluding"
+            if _nc_how.norm_metric == "py_per_myr":
+                _norm_explain = "multiply FTE by project duration and divide by cost to get <strong>PY / MYR M</strong>"
+                _apply_explain = f"<code>norm (PY/MYR M) &times; project cost (MYR M) &divide; project duration (years)</code>"
+            else:
+                _norm_explain = "divide FTE by cost to get <strong>FTE / MYR M</strong>"
+                _apply_explain = f"<code>norm (FTE/MYR M) &times; project cost (MYR M)</code>"
+            st.markdown(f"""
+<div class="hiw-step">
+    <div class="hiw-step-num">6</div>
+    <div class="hiw-step-body">
+        <h5>Staffing Norms &mdash; a second opinion from peer benchmarks</h5>
+        <p>Steps 1&ndash;5 produce the <strong>Model FTE</strong> &mdash; based on PETRONAS&rsquo;s own team sizes per project. But how does that compare to how Shell, Chevron, and BASF staff similar work?</p>
+        <p><strong>How it works:</strong></p>
+        <ol>
+            <li><strong>Collect peer data</strong> &mdash; for each company and each archetype/stage, we know the typical project FTE, cost (MYR M), and duration.</li>
+            <li><strong>Compute a staffing norm</strong> &mdash; {_norm_explain}.</li>
+            <li><strong>Average across peers</strong> &mdash; currently using <strong>{_preset_label_how}</strong>, {_tech_label_how} plant/lab technicians.</li>
+            <li><strong>Apply to PETRONAS&rsquo;s projects</strong> &mdash; the model already knows how many projects are active each month (from Step 4). For each active project, multiply: {_apply_explain}. This gives the FTE that <em>peers would assign</em> to that project.</li>
+            <li><strong>Sum across all projects</strong> &mdash; same as Step 5, but using norm-implied FTE instead of configured team sizes. Divide by utilization rate.</li>
+        </ol>
+        <div class="hiw-formula">Norms FTE per project = {_apply_explain}</div>
+        <div class="hiw-formula">Norms FTE (monthly) = Active projects &times; Norms FTE per project &divide; Utilization</div>
+        <p><strong>The gap</strong> = Norms FTE &minus; Model FTE. A positive gap means peers would staff more heavily than the model assumes. A negative gap means PETRONAS&rsquo;s configured teams already exceed peer norms.</p>
+        <p><em>Note: Model FTE and Norms FTE use the exact same project pipeline (same budget, same project counts, same timing). The only difference is how many people each project gets.</em></p>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
         # ── Understand the FTE profile (expander) ─────────────────────────
         _profile_label = "Why does headcount fluctuate?" if is_cashflow else "Why does headcount stabilize?"
         with st.expander(_profile_label):
@@ -1376,7 +1799,7 @@ You tell it how much money you have and what types of projects you run. It tells
             disp["Month"] = disp["month"].dt.strftime("%Y-%m")
             disp["Archetype"] = disp["archetype"]
             disp["Stage"] = disp["stage"]
-            disp["Active Projects"] = disp["effective_projects"].round(1)
+            disp["Active Projects"] = disp["effective_projects"].round(0).astype(int)
             disp["Total FTE"] = disp["fte_total"].round(1)
             nice_cols = ["Month", "Archetype", "Stage", "Active Projects"]
             for role in cfg.all_roles:
@@ -1409,7 +1832,7 @@ You tell it how much money you have and what types of projects you run. It tells
                 disp["month"].dt.year.isin(sel_year)
             ]
 
-            st.dataframe(filtered[nice_cols], use_container_width=True, hide_index=True, height=500)
+            st.dataframe(filtered[nice_cols], width="stretch", hide_index=True, height=500)
             st.caption(f"Showing {len(filtered):,} rows")
             st.download_button("Download CSV", filtered[nice_cols].to_csv(index=False),
                                f"fte_monthly_{name}.csv", "text/csv", key=f"{P}dl_monthly")
@@ -1421,7 +1844,7 @@ You tell it how much money you have and what types of projects you run. It tells
         else:
             ann_disp = result.annual_summary.copy()
             _yp_for_ann = result.yearly_projects
-            ann_disp.insert(1, "New projects", ann_disp["Year"].map(lambda y: round(_yp_for_ann.get(y, 0), 1)))
+            ann_disp.insert(1, "New projects", ann_disp["Year"].map(lambda y: int(round(_yp_for_ann.get(y, 0)))))
 
             _first_avg = ann_disp["Avg monthly FTE"].iloc[0]
             _last_avg_ann = ann_disp["Avg monthly FTE"].iloc[-1]
@@ -1483,13 +1906,19 @@ You tell it how much money you have and what types of projects you run. It tells
                 if not high_ann.empty and "Avg monthly FTE" in high_ann.columns:
                     ann_disp["FTE (high cost)"] = high_ann["Avg monthly FTE"].values
 
+            norms_ann = result.norms_annual
+            if isinstance(norms_ann, pd.DataFrame) and not norms_ann.empty:
+                _merged_n = ann_disp[["Year"]].merge(norms_ann[["Year", "Norms Avg FTE"]], on="Year", how="left").fillna(0)
+                ann_disp["Norms Avg FTE"] = _merged_n["Norms Avg FTE"].round(0).astype(int).values
+                ann_disp["Norms Gap"] = (ann_disp["Norms Avg FTE"] - ann_disp["Avg monthly FTE"]).astype(int)
+
             def _highlight_final_year(row):
                 if row["Year"] == _last_yr:
                     return ["background-color: #E8F0FE; font-weight: 700"] * len(row)
                 return [""] * len(row)
             st.dataframe(
                 ann_disp.style.apply(_highlight_final_year, axis=1),
-                use_container_width=True, hide_index=True,
+                width="stretch", hide_index=True,
             )
             if is_cashflow:
                 st.caption(
@@ -1513,7 +1942,7 @@ You tell it how much money you have and what types of projects you run. It tells
                     return [""] * len(row)
                 st.dataframe(
                     _role_breakdown.style.apply(_highlight_final_yr_role, axis=1),
-                    use_container_width=True, hide_index=True,
+                    width="stretch", hide_index=True,
                 )
 
     # ── Assumption Register ──
@@ -1536,7 +1965,7 @@ You tell it how much money you have and what types of projects you run. It tells
             {"Assumption": "Start year", "Value": str(cfg.start_year), "Type": "Input", "Meaning": "First year of project intake"},
             {"Assumption": "End year", "Value": str(cfg.end_year), "Type": "Input", "Meaning": "Last year of project intake"},
             {"Assumption": "Intake window", "Value": f"{cfg.intake_spread_months} months", "Type": "Input", "Meaning": "New projects spread evenly across this many months"},
-        ]), use_container_width=True, hide_index=True)
+        ]), width="stretch", hide_index=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
         st.markdown('<div class="card"><h5>Pipeline & funnel</h5>', unsafe_allow_html=True)
@@ -1550,7 +1979,7 @@ You tell it how much money you have and what types of projects you run. It tells
             if has_phase2:
                 row_data[f"Phase 2 ({cfg.phase2_start_year}–{cfg.end_year})"] = f"{cfg.stage_mix_phase2.get(sn,0)*100:.0f}%"
             pipe_rows.append(row_data)
-        st.dataframe(pd.DataFrame(pipe_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(pipe_rows), width="stretch", hide_index=True)
         if has_phase2:
             st.caption("Conversion rates (% move to next) stay the same across both phases — only the allocation (% start here) shifts.")
         st.markdown('</div>', unsafe_allow_html=True)
@@ -1566,7 +1995,7 @@ You tell it how much money you have and what types of projects you run. It tells
             {"Assumption": "Contingency buffer", "Value": f"{cfg.contingency_pct*100:.0f}%", "Type": "Input",
              "Meaning": f"Adjusted FTE = Base × (1 + {cfg.contingency_pct*100:.0f}%)" if has_contingency else "No buffer applied"}
         )
-        st.dataframe(pd.DataFrame(advanced_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(advanced_rows), width="stretch", hide_index=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
         st.markdown('<div class="card"><h5>Project type parameters</h5>', unsafe_allow_html=True)
@@ -1583,7 +2012,7 @@ You tell it how much money you have and what types of projects you run. It tells
                 for role in sp.fte_per_role:
                     row_data[f"{role} FTE"] = f"{sp.fte_per_role[role]:.1f}"
                 arch_rows.append(row_data)
-        st.dataframe(pd.DataFrame(arch_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(arch_rows), width="stretch", hide_index=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
         st.markdown('<div class="card"><h5>Derived outputs</h5>', unsafe_allow_html=True)
@@ -1622,7 +2051,7 @@ You tell it how much money you have and what types of projects you run. It tells
                 "Value": f"{_ppy:,.0f}",
                 "How": "Net budget ÷ weighted lifecycle cost",
             })
-        st.dataframe(pd.DataFrame(derived_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(derived_rows), width="stretch", hide_index=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
         _role_list_str = ", ".join(cfg.all_roles)
@@ -1655,7 +2084,7 @@ You tell it how much money you have and what types of projects you run. It tells
                 {"Assumption": "No resource constraints", "Meaning": "The model doesn't cap FTE supply — assumes you can always hire enough"},
                 {"Assumption": "Monthly granularity", "Meaning": "Projects and FTE tracked monthly"},
             ]
-            st.dataframe(pd.DataFrame(_structural), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(_structural), width="stretch", hide_index=True)
 
     # ── Single-scenario Excel download ──
     st.divider()
@@ -1707,7 +2136,7 @@ def _render_compare_view(results_list):
     _reordered = [c for c in _preferred_order if c in summary_df.columns]
     _remaining = [c for c in summary_df.columns if c not in _reordered]
     summary_df = summary_df[_reordered + _remaining]
-    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+    st.dataframe(summary_df, width="stretch", hide_index=True)
 
     # Chart
     st.markdown(f"#### Headcount varies by {_spread:,.0f} FTE across scenarios")
@@ -2201,6 +2630,56 @@ def _generate_excel(cfg: ModelConfig, result) -> bytes:
     ws_m.column_dimensions["A"].width = 3
     for ci in range(2, 13):
         ws_m.column_dimensions[get_column_letter(ci)].width = 18
+
+    # Staffing Norms (if enabled)
+    norms_annual = result.norms_annual
+    if isinstance(norms_annual, pd.DataFrame) and not norms_annual.empty:
+        ws_n = wb.create_sheet("Staffing Norms")
+        ws_n.sheet_properties.tabColor = "0067A0"
+        ws_n["B2"] = "Staffing Norms Analysis"
+        ws_n["B2"].font = title_font
+        ws_n["B3"] = "Model FTE vs Peer-Norm Implied FTE"
+        ws_n["B3"].font = sub_font
+
+        ann_base = result.annual_summary[["Year", "Avg monthly FTE"]].copy()
+        merged = ann_base.merge(norms_annual[["Year", "Norms Avg FTE"]], on="Year", how="outer").fillna(0)
+        merged["Gap"] = merged["Norms Avg FTE"] - merged["Avg monthly FTE"]
+        merged.rename(columns={"Avg monthly FTE": "Model Avg FTE"}, inplace=True)
+        for c in ["Model Avg FTE", "Norms Avg FTE", "Gap"]:
+            merged[c] = merged[c].round(0).astype(int)
+        merged["Year"] = merged["Year"].astype(int)
+
+        row = 5
+        cols = list(merged.columns)
+        for ci, h in enumerate(cols, 2):
+            ws_n.cell(row=row, column=ci, value=h)
+        _hdr_row(ws_n, row, len(cols) + 1)
+        row += 1
+        for _, dr in merged.iterrows():
+            for ci, col in enumerate(cols, 2):
+                ws_n.cell(row=row, column=ci, value=dr[col]).font = body_font
+            _data_row(ws_n, row, len(cols) + 1, alt=(row % 2 == 0))
+            row += 1
+
+        row += 1
+        _ml_excel = cfg.norms_config.metric_label
+        ws_n[f"B{row}"] = f"Combined Norms ({_ml_excel})"
+        ws_n[f"B{row}"].font = sec_font
+        row += 1
+        for ci, h in enumerate(["Archetype", "Stage", _ml_excel], 2):
+            ws_n.cell(row=row, column=ci, value=h)
+        _hdr_row(ws_n, row, 4)
+        row += 1
+        for (a, s), v in sorted(result.combined_norms.items()):
+            ws_n.cell(row=row, column=2, value=a).font = body_font
+            ws_n.cell(row=row, column=3, value=s).font = body_font
+            ws_n.cell(row=row, column=4, value=round(v, 4)).font = body_font
+            _data_row(ws_n, row, 4, alt=(row % 2 == 0))
+            row += 1
+
+        ws_n.column_dimensions["A"].width = 3
+        for ci in range(2, 6):
+            ws_n.column_dimensions[get_column_letter(ci)].width = 22
 
     buf = io.BytesIO()
     wb.save(buf)

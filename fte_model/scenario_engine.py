@@ -221,6 +221,30 @@ def generate_comparison_excel(
                     _data_row(ws, row, len(arch_headers), alt=(row % 2 == 0))
                     row += 1
 
+        # Norms comparison (if available)
+        norms_ann = res.norms_annual
+        if isinstance(norms_ann, pd.DataFrame) and not norms_ann.empty and not ann.empty:
+            row += 1
+            ws.cell(row=row, column=1, value="Staffing Norms Comparison").font = Font(
+                name="Calibri", size=12, bold=True, color="051C2C"
+            )
+            row += 1
+            merged = ann[["Year", "Avg monthly FTE"]].merge(
+                norms_ann[["Year", "Norms Avg FTE"]], on="Year", how="outer"
+            ).fillna(0)
+            merged["Gap"] = merged["Norms Avg FTE"] - merged["Avg monthly FTE"]
+            merged.rename(columns={"Avg monthly FTE": "Model Avg FTE"}, inplace=True)
+            n_cols = list(merged.columns)
+            for ci, h in enumerate(n_cols, 1):
+                ws.cell(row=row, column=ci, value=h)
+            _hdr_row(ws, row, len(n_cols))
+            row += 1
+            for ri, (_, dr) in enumerate(merged.iterrows()):
+                for ci, col in enumerate(n_cols, 1):
+                    ws.cell(row=row, column=ci, value=round(dr[col], 1)).font = body_font
+                _data_row(ws, row, len(n_cols), alt=(ri % 2 == 1))
+                row += 1
+
         ws.column_dimensions["A"].width = 22
         ws.column_dimensions["B"].width = 20
         for ci in range(3, 14):
