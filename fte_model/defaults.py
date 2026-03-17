@@ -6,76 +6,76 @@ from config import Archetype, ModelConfig, NormSource, NormStageData, NormsConfi
 def default_baseline() -> ModelConfig:
     chemistry = Archetype(
         name="Chemistry",
-        portfolio_share=0.20,
+        portfolio_share=0.40,
         stages={
             "TRL 1-4": StageParams(
-                duration_months=7,
-                cost_min=4.0,
-                cost_max=4.0,
-                fte_per_role={"Researcher": 3.5, "Developer": 1.5},
+                duration_months=36,
+                cost_min=2.5,
+                cost_max=10.0,
+                fte_per_role={"Researcher": 4.5, "Developer": 0.0},
             ),
             "TRL 5-7": StageParams(
-                duration_months=21,
-                cost_min=8.0,
-                cost_max=8.0,
-                fte_per_role={"Researcher": 1.5, "Developer": 3.5},
+                duration_months=24,
+                cost_min=5.0,
+                cost_max=18.0,
+                fte_per_role={"Researcher": 5.5, "Developer": 0.0},
             ),
         },
     )
 
     hardware_mechanical = Archetype(
         name="Hardware: Mechanical",
-        portfolio_share=0.30,
+        portfolio_share=0.18,
         stages={
             "TRL 1-4": StageParams(
-                duration_months=9,
+                duration_months=30,
                 cost_min=5.0,
-                cost_max=5.0,
-                fte_per_role={"Researcher": 3.5, "Developer": 1.5},
+                cost_max=15.0,
+                fte_per_role={"Researcher": 1.5, "Developer": 0.0},
             ),
             "TRL 5-7": StageParams(
-                duration_months=21,
-                cost_min=35.0,
-                cost_max=35.0,
-                fte_per_role={"Researcher": 1.5, "Developer": 3.5},
+                duration_months=18,
+                cost_min=2.0,
+                cost_max=5.0,
+                fte_per_role={"Researcher": 1.5, "Developer": 0.0},
             ),
         },
     )
 
     hardware_process = Archetype(
         name="Hardware: Process",
-        portfolio_share=0.30,
+        portfolio_share=0.25,
         stages={
             "TRL 1-4": StageParams(
-                duration_months=24,
-                cost_min=15.0,
-                cost_max=15.0,
-                fte_per_role={"Researcher": 6.5, "Developer": 1.5},
+                duration_months=54,
+                cost_min=4.0,
+                cost_max=19.0,
+                fte_per_role={"Researcher": 2.5, "Developer": 0.0},
             ),
             "TRL 5-7": StageParams(
-                duration_months=75,
-                cost_min=50.0,
-                cost_max=50.0,
-                fte_per_role={"Researcher": 1.5, "Developer": 6.5},
+                duration_months=72,
+                cost_min=40.0,
+                cost_max=110.0,
+                fte_per_role={"Researcher": 6.0, "Developer": 0.0},
             ),
         },
     )
 
     algorithm = Archetype(
         name="Algorithm",
-        portfolio_share=0.20,
+        portfolio_share=0.17,
         stages={
             "TRL 1-4": StageParams(
-                duration_months=9,
-                cost_min=2.0,
-                cost_max=2.0,
-                fte_per_role={"Researcher": 0.5, "Developer": 0.5},
+                duration_months=30,
+                cost_min=3.0,
+                cost_max=4.0,
+                fte_per_role={"Researcher": 2.5, "Developer": 0.0},
             ),
             "TRL 5-7": StageParams(
-                duration_months=9,
-                cost_min=5.0,
-                cost_max=5.0,
-                fte_per_role={"Researcher": 0.5, "Developer": 0.5},
+                duration_months=18,
+                cost_min=2.0,
+                cost_max=4.0,
+                fte_per_role={"Researcher": 1.5, "Developer": 0.0},
             ),
         },
     )
