@@ -1,9 +1,0 @@
-__pycache__
-*.pyc
-*.xlsx
-build_excel_model.py
-.git
-venv
-.venv
-env
-.env
